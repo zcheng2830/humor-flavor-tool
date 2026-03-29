@@ -1,4 +1,5 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 let browserClient: SupabaseClient | null = null;
 
@@ -17,24 +18,22 @@ function getSupabasePublicKey() {
   return key;
 }
 
+export function getSupabaseCredentials() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) {
+    throw new Error("Missing required environment variable: NEXT_PUBLIC_SUPABASE_URL");
+  }
+
+  return {
+    url,
+    publishableKey: getSupabasePublicKey(),
+  };
+}
+
 export function getSupabaseBrowserClient() {
   if (!browserClient) {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    if (!supabaseUrl) {
-      throw new Error("Missing required environment variable: NEXT_PUBLIC_SUPABASE_URL");
-    }
-
-    browserClient = createClient(
-      supabaseUrl,
-      getSupabasePublicKey(),
-      {
-        auth: {
-          persistSession: true,
-          autoRefreshToken: true,
-          detectSessionInUrl: true,
-        },
-      },
-    );
+    const { url, publishableKey } = getSupabaseCredentials();
+    browserClient = createBrowserClient(url, publishableKey);
   }
 
   return browserClient;

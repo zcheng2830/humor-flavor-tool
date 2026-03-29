@@ -4,6 +4,7 @@ Admin-only prompt-chain manager for creating and testing humor flavors against t
 
 ## Features
 
+- Google OAuth sign-in gate
 - Admin gate: app works only when `profiles.is_superadmin = true` or `profiles.is_matrix_admin = true`
 - Humor flavor CRUD:
   - Create, update, delete flavors
@@ -27,7 +28,7 @@ Admin-only prompt-chain manager for creating and testing humor flavors against t
 
 - Next.js 16 (App Router)
 - React 19
-- Supabase JS client
+- Supabase JS (`@supabase/supabase-js` + `@supabase/ssr`)
 
 ## Local Setup
 
@@ -48,13 +49,21 @@ Required env vars:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `NEXT_PUBLIC_ALMOSTCRACKD_API_BASE_URL` (default `https://api.almostcrackd.ai`)
+- Optional: `NEXT_PUBLIC_AUTH_REDIRECT_ORIGIN` (force OAuth callback origin)
 
-3. Run SQL in Supabase:
+3. Enable Google auth in Supabase:
+
+- In Supabase Auth providers, enable Google.
+- Add callback URLs in Supabase Auth redirect URL allow list:
+  - `http://localhost:3000/auth/callback`
+  - `https://<your-domain>/auth/callback`
+
+4. Run SQL in Supabase:
 
 - Execute [`supabase/schema.sql`](./supabase/schema.sql) in your Supabase SQL editor.
 - This creates `humor_flavors`, `humor_flavor_steps`, `humor_flavor_caption_runs`, plus admin-only RLS policies.
 
-4. Start dev server:
+5. Start dev server:
 
 ```bash
 npm run dev

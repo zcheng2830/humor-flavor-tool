@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import Image from "next/image";
-import {
-  getSupabaseBrowserClient,
-} from "@/lib/supabase-client";
+import { getSupabaseBrowserClient } from "@/lib/supabase-client";
+import { isGoogleUser } from "@/lib/auth/google";
 import type { CaptionRun, FlavorWithSteps, HumorFlavorStep, Profile, ThemeMode } from "@/lib/types";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 
@@ -259,6 +258,24 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function resolveAuthRedirectOrigin() {
+  const configuredOrigin = process.env.NEXT_PUBLIC_AUTH_REDIRECT_ORIGIN?.trim();
+
+  if (!configuredOrigin) {
+    return window.location.origin;
+  }
+
+  try {
+    const parsed = new URL(configuredOrigin);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return window.location.origin;
+    }
+    return parsed.origin;
+  } catch {
+    return window.location.origin;
+  }
+}
+
 export default function HumorFlavorApp() {
   const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
   const [envError, setEnvError] = useState<string | null>(null);
@@ -266,8 +283,6 @@ export default function HumorFlavorApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
 
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -352,7 +367,9 @@ export default function HumorFlavorApp() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
-      setAuthError(null);
+      if (nextSession) {
+        setAuthError(null);
+      }
     });
 
     return () => {
@@ -360,6 +377,30 @@ export default function HumorFlavorApp() {
       subscription.unsubscribe();
     };
   }, [supabase]);
+
+  useEffect(() => {
+    if (!supabase || !session) {
+      return;
+    }
+
+    if (isGoogleUser(session.user)) {
+      return;
+    }
+
+    let active = true;
+    setAuthError("Google authentication is required for this tool.");
+
+    void supabase.auth.signOut().then(({ error }) => {
+      if (!active || !error) {
+        return;
+      }
+      setAuthError(error.message);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [session, supabase]);
 
   useEffect(() => {
     if (!supabase) {
@@ -551,8 +592,7 @@ export default function HumorFlavorApp() {
     };
   }, []);
 
-  async function handleSignIn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSignInWithGoogle() {
     if (!supabase) {
       return;
     }
@@ -560,18 +600,23 @@ export default function HumorFlavorApp() {
     setIsSigningIn(true);
     setAuthError(null);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: loginEmail.trim(),
-      password: loginPassword,
-    });
+    try {
+      const redirectTo = `${resolveAuthRedirectOrigin()}/auth/callback`;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+        },
+      });
 
-    if (error) {
-      setAuthError(error.message);
-    } else {
-      setLoginPassword("");
+      if (error) {
+        setAuthError(error.message);
+        setIsSigningIn(false);
+      }
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, "Google sign-in failed."));
+      setIsSigningIn(false);
     }
-
-    setIsSigningIn(false);
   }
 
   async function handleSignOut() {
@@ -579,6 +624,7 @@ export default function HumorFlavorApp() {
       return;
     }
     await supabase.auth.signOut();
+    setAuthError(null);
     setFlavors([]);
     setCaptionRuns([]);
     setSelectedFlavorId(null);
@@ -1062,34 +1108,20 @@ export default function HumorFlavorApp() {
         <div className="surface-card w-full max-w-md p-6">
           <h1 className="text-2xl font-semibold">Humor Flavor Tool</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
-            Sign in with your Supabase account. Access is restricted to admins.
+            Continue with your Google account. Access is restricted to admins.
           </p>
-          <form className="mt-6 space-y-4" onSubmit={handleSignIn}>
-            <label className="field-label">
-              Email
-              <input
-                className="field-input mt-1"
-                type="email"
-                value={loginEmail}
-                onChange={(event) => setLoginEmail(event.target.value)}
-                required
-              />
-            </label>
-            <label className="field-label">
-              Password
-              <input
-                className="field-input mt-1"
-                type="password"
-                value={loginPassword}
-                onChange={(event) => setLoginPassword(event.target.value)}
-                required
-              />
-            </label>
-            {authError ? <p className="status-error">{authError}</p> : null}
-            <button className="primary-btn w-full" type="submit" disabled={isSigningIn}>
-              {isSigningIn ? "Signing in..." : "Sign in"}
-            </button>
-          </form>
+          <p className="mt-2 text-sm text-[var(--muted)]">
+            Google provider must be enabled in your Supabase Auth settings.
+          </p>
+          {authError ? <p className="status-error mt-4">{authError}</p> : null}
+          <button
+            className="primary-btn mt-6 w-full"
+            type="button"
+            onClick={handleSignInWithGoogle}
+            disabled={isSigningIn}
+          >
+            {isSigningIn ? "Redirecting to Google..." : "Continue with Google"}
+          </button>
         </div>
       </main>
     );
