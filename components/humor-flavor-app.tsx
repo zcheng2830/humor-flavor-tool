@@ -408,8 +408,8 @@ async function fetchCaptionRuns(supabase: SupabaseClient, flavorId: string) {
       return [];
     }
 
-    const rows = (fallbackResponse.data ?? []) as CaptionRunRow[];
-    return rows.map<CaptionRun>((row) => ({
+    const fallbackRows = (fallbackResponse.data ?? []) as CaptionRunRow[];
+    return fallbackRows.map<CaptionRun>((row) => ({
       id: String(row.id),
       humor_flavor_id: String(row.humor_flavor_id),
       image_name: row.image_name ?? row.image_id,
