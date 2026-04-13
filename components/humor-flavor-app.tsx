@@ -383,33 +383,44 @@ async function fetchFlavorsWithSteps(supabase: SupabaseClient) {
 }
 
 async function fetchCaptionRuns(supabase: SupabaseClient, flavorId: string) {
-  let response = await supabase
+  const primaryResponse = await supabase
     .from("humor_flavor_caption_runs")
     .select("id, humor_flavor_id, image_name, image_id, captions, raw_response, created_at")
     .eq("humor_flavor_id", flavorId)
     .order("created_at", { ascending: false });
 
-  if (response.error) {
-    if (response.error.code === "PGRST205") {
+  if (primaryResponse.error) {
+    if (primaryResponse.error.code === "PGRST205") {
       return [];
     }
 
-    if (!isMissingColumnError(response.error)) {
-      throw new Error(response.error.message);
+    if (!isMissingColumnError(primaryResponse.error)) {
+      throw new Error(primaryResponse.error.message);
     }
 
-    response = await supabase
+    const fallbackResponse = await supabase
       .from("humor_flavor_caption_runs")
       .select("id, humor_flavor_id, image_name, image_id, captions, raw_response, created_datetime_utc")
       .eq("humor_flavor_id", flavorId)
       .order("created_datetime_utc", { ascending: false });
 
-    if (response.error) {
+    if (fallbackResponse.error) {
       return [];
     }
+
+    const rows = (fallbackResponse.data ?? []) as CaptionRunRow[];
+    return rows.map<CaptionRun>((row) => ({
+      id: String(row.id),
+      humor_flavor_id: String(row.humor_flavor_id),
+      image_name: row.image_name ?? row.image_id,
+      image_id: row.image_id,
+      captions: toStringArray(row.captions),
+      raw_response: row.raw_response,
+      created_at: toIsoTimestamp(row.created_at, row.created_datetime_utc),
+    }));
   }
 
-  const rows = (response.data ?? []) as CaptionRunRow[];
+  const rows = (primaryResponse.data ?? []) as CaptionRunRow[];
   return rows.map<CaptionRun>((row) => ({
     id: String(row.id),
     humor_flavor_id: String(row.humor_flavor_id),
