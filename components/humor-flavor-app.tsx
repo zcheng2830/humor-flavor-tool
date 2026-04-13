@@ -258,6 +258,17 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function toFlavorSlug(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+
+  return slug || `flavor-${Date.now()}`;
+}
+
 function resolveAuthRedirectOrigin() {
   const configuredOrigin = process.env.NEXT_PUBLIC_AUTH_REDIRECT_ORIGIN?.trim();
 
@@ -650,27 +661,62 @@ export default function HumorFlavorApp() {
     setIsCreatingFlavor(true);
     setDataError(null);
 
-    const { data, error } = await supabase
-      .from("humor_flavors")
-      .insert({
+    const description = newFlavorDescription.trim() || null;
+    const slug = toFlavorSlug(name);
+    const insertCandidates: Array<Record<string, unknown>> = [
+      {
         name,
-        description: newFlavorDescription.trim() || null,
+        description,
         created_by: session.user.id,
-      })
-      .select("id")
-      .single();
+      },
+      {
+        name,
+        description,
+        created_by_user_id: session.user.id,
+        modified_by_user_id: session.user.id,
+      },
+      {
+        slug,
+        description,
+        created_by_user_id: session.user.id,
+        modified_by_user_id: session.user.id,
+      },
+      {
+        slug,
+        description,
+        created_by: session.user.id,
+      },
+    ];
 
-    if (error) {
-      setDataError(error.message);
+    let createdFlavorId: string | null = null;
+    let createErrorMessage: string | null = null;
+
+    for (const payload of insertCandidates) {
+      const { data, error } = await supabase
+        .from("humor_flavors")
+        .insert(payload)
+        .select("id")
+        .single();
+
+      if (error) {
+        createErrorMessage = error.message;
+        continue;
+      }
+
+      createdFlavorId =
+        data && typeof data === "object" && "id" in data ? String(data.id as string | number) : null;
+      break;
+    }
+
+    if (!createdFlavorId) {
+      setDataError(createErrorMessage ?? "Failed to create flavor.");
       setIsCreatingFlavor(false);
       return;
     }
 
     setNewFlavorName("");
     setNewFlavorDescription("");
-    if (data?.id) {
-      setSelectedFlavorId(data.id as string);
-    }
+    setSelectedFlavorId(createdFlavorId);
     setDataRefreshToken((token) => token + 1);
     setIsCreatingFlavor(false);
   }
@@ -689,16 +735,52 @@ export default function HumorFlavorApp() {
     setIsSavingFlavor(true);
     setDataError(null);
 
-    const { error } = await supabase
-      .from("humor_flavors")
-      .update({
+    const description = flavorDraftDescription.trim() || null;
+    const slug = toFlavorSlug(name);
+    const updateCandidates: Array<Record<string, unknown>> = [
+      {
         name,
-        description: flavorDraftDescription.trim() || null,
-      })
-      .eq("id", selectedFlavorId);
+        description,
+      },
+      {
+        slug,
+        description,
+      },
+    ];
 
-    if (error) {
-      setDataError(error.message);
+    if (session?.user?.id) {
+      updateCandidates.push({
+        name,
+        description,
+        modified_by_user_id: session.user.id,
+      });
+      updateCandidates.push({
+        slug,
+        description,
+        modified_by_user_id: session.user.id,
+      });
+    }
+
+    let saveSucceeded = false;
+    let saveErrorMessage: string | null = null;
+
+    for (const payload of updateCandidates) {
+      const response = await supabase
+        .from("humor_flavors")
+        .update(payload)
+        .eq("id", selectedFlavorId);
+
+      if (response.error) {
+        saveErrorMessage = response.error.message;
+        continue;
+      }
+
+      saveSucceeded = true;
+      break;
+    }
+
+    if (!saveSucceeded) {
+      setDataError(saveErrorMessage ?? "Failed to save flavor.");
     } else {
       setDataRefreshToken((token) => token + 1);
     }
@@ -763,16 +845,54 @@ export default function HumorFlavorApp() {
     const maxOrder =
       selectedFlavor.steps.reduce((currentMax, step) => Math.max(currentMax, step.step_order), 0) + 1;
 
-    const response = await supabase.from("humor_flavor_steps").insert({
-      humor_flavor_id: selectedFlavorId,
-      title,
-      prompt,
-      step_order: maxOrder,
-      created_by: session.user.id,
-    });
+    const insertCandidates: Array<Record<string, unknown>> = [
+      {
+        humor_flavor_id: selectedFlavorId,
+        title,
+        prompt,
+        step_order: maxOrder,
+        created_by: session.user.id,
+      },
+      {
+        humor_flavor_id: selectedFlavorId,
+        title,
+        prompt,
+        step_order: maxOrder,
+        created_by_user_id: session.user.id,
+        modified_by_user_id: session.user.id,
+      },
+      {
+        humor_flavor_id: selectedFlavorId,
+        title,
+        prompt,
+        order_by: maxOrder,
+        created_by_user_id: session.user.id,
+        modified_by_user_id: session.user.id,
+      },
+      {
+        humor_flavor_id: selectedFlavorId,
+        title,
+        prompt,
+        order_by: maxOrder,
+        created_by: session.user.id,
+      },
+    ];
 
-    if (response.error) {
-      setDataError(response.error.message);
+    let createStepErrorMessage: string | null = null;
+    let createStepSucceeded = false;
+
+    for (const payload of insertCandidates) {
+      const response = await supabase.from("humor_flavor_steps").insert(payload);
+      if (response.error) {
+        createStepErrorMessage = response.error.message;
+        continue;
+      }
+      createStepSucceeded = true;
+      break;
+    }
+
+    if (!createStepSucceeded) {
+      setDataError(createStepErrorMessage ?? "Failed to create step.");
     } else {
       setNewStepTitle("");
       setNewStepPrompt("");
@@ -1055,18 +1175,49 @@ export default function HumorFlavorApp() {
       setLatestRawResponse(captionPayload);
       setPipelineStatus("Caption generation finished.");
 
-      const persistenceResponse = await supabase.from("humor_flavor_caption_runs").insert({
-        humor_flavor_id: selectedFlavor.id,
-        image_name: selectedTestFile.file.name,
-        image_id: imageId,
-        captions,
-        raw_response: captionPayload,
-        created_by: session.user.id,
-      });
+      const captionRunCandidates: Array<Record<string, unknown>> = [
+        {
+          humor_flavor_id: selectedFlavor.id,
+          image_name: selectedTestFile.file.name,
+          image_id: imageId,
+          captions,
+          raw_response: captionPayload,
+          created_by: session.user.id,
+        },
+        {
+          humor_flavor_id: selectedFlavor.id,
+          image_name: selectedTestFile.file.name,
+          image_id: imageId,
+          captions,
+          raw_response: captionPayload,
+          created_by_user_id: session.user.id,
+          modified_by_user_id: session.user.id,
+        },
+        {
+          humor_flavor_id: selectedFlavor.id,
+          image_name: selectedTestFile.file.name,
+          image_id: imageId,
+          captions,
+          raw_response: captionPayload,
+        },
+      ];
 
-      if (persistenceResponse.error) {
+      let persistenceErrorMessage: string | null = null;
+      let persistenceSucceeded = false;
+
+      for (const payload of captionRunCandidates) {
+        const persistenceResponse = await supabase.from("humor_flavor_caption_runs").insert(payload);
+        if (persistenceResponse.error) {
+          persistenceErrorMessage = persistenceResponse.error.message;
+          continue;
+        }
+        persistenceSucceeded = true;
+        break;
+      }
+
+      if (!persistenceSucceeded) {
         setPipelineWarning(
-          `Captions were generated but history save failed: ${persistenceResponse.error.message}`,
+          `Captions were generated but history save failed: ${persistenceErrorMessage ?? "Unknown error."}`,
         );
       } else {
         setRunsRefreshToken((token) => token + 1);
