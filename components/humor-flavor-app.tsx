@@ -21,25 +21,14 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 ]);
 
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
-const AUTO_PURGE_FLAVOR_NAMES = new Set(
-  [
-    "codex-chaos-notes-1776097785233",
-    "codex-test-1776097342",
-    "co-lum-bia copy 2-copy",
-    "co-lum-bia copy 2",
-    "dwight-shrute copy",
-    "co-lum-bia copy",
-    "cool-test",
-    "dad-joke",
-    "eva",
-  ].map((name) => name.toLowerCase()),
-);
 
 interface FlavorRow {
   id: string | number;
   name?: string | null;
   slug?: string | null;
   description?: string | null;
+  created_by?: string | null;
+  created_by_user_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   created_datetime_utc?: string | null;
@@ -287,36 +276,66 @@ async function persistStepOrder(
   return fallback.error ?? null;
 }
 
-async function fetchFlavorsWithSteps(supabase: SupabaseClient) {
-  let flavors: FlavorRow[] = [];
-  const primaryFlavorsResponse = await supabase
-    .from("humor_flavors")
-    .select("id, name, description, created_at, updated_at")
-    .order("created_at", { ascending: false });
+async function fetchFlavorsWithSteps(
+  supabase: SupabaseClient,
+  userId: string,
+) {
+  const flavorQueryAttempts = [
+    {
+      select: "id, name, description, created_by, created_at, updated_at",
+      ownerColumn: "created_by" as const,
+      orderColumn: "created_at" as const,
+    },
+    {
+      select: "id, name, description, created_by_user_id, created_at, updated_at",
+      ownerColumn: "created_by_user_id" as const,
+      orderColumn: "created_at" as const,
+    },
+    {
+      select: "id, slug, description, created_by_user_id, created_datetime_utc, modified_datetime_utc",
+      ownerColumn: "created_by_user_id" as const,
+      orderColumn: "created_datetime_utc" as const,
+    },
+    {
+      select: "id, slug, description, created_by, created_datetime_utc, modified_datetime_utc",
+      ownerColumn: "created_by" as const,
+      orderColumn: "created_datetime_utc" as const,
+    },
+  ];
 
-  if (primaryFlavorsResponse.error) {
-    if (!isMissingColumnError(primaryFlavorsResponse.error)) {
-      throw new Error(primaryFlavorsResponse.error.message);
-    }
-
-    const fallbackFlavorsResponse = await supabase
+  let flavors: FlavorRow[] | null = null;
+  for (const attempt of flavorQueryAttempts) {
+    const response = await supabase
       .from("humor_flavors")
-      .select("id, slug, description, created_datetime_utc, modified_datetime_utc")
-      .order("created_datetime_utc", { ascending: false });
+      .select(attempt.select)
+      .eq(attempt.ownerColumn, userId)
+      .order(attempt.orderColumn, { ascending: false });
 
-    if (fallbackFlavorsResponse.error) {
-      throw new Error(fallbackFlavorsResponse.error.message);
+    if (response.error) {
+      if (isMissingColumnError(response.error)) {
+        continue;
+      }
+      throw new Error(response.error.message);
     }
 
-    flavors = (fallbackFlavorsResponse.data ?? []) as FlavorRow[];
-  } else {
-    flavors = (primaryFlavorsResponse.data ?? []) as FlavorRow[];
+    flavors = (response.data ?? []) as unknown as FlavorRow[];
+    break;
+  }
+
+  if (!flavors) {
+    return [];
+  }
+
+  const flavorIds = flavors.map((row) => String(row.id));
+  if (!flavorIds.length) {
+    return [];
   }
 
   let steps: StepRow[] = [];
   const primaryStepsResponse = await supabase
     .from("humor_flavor_steps")
     .select("id, humor_flavor_id, title, prompt, step_order, created_at, updated_at")
+    .in("humor_flavor_id", flavorIds)
     .order("step_order", { ascending: true });
 
   if (primaryStepsResponse.error) {
@@ -329,6 +348,7 @@ async function fetchFlavorsWithSteps(supabase: SupabaseClient) {
       .select(
         "id, humor_flavor_id, description, llm_user_prompt, llm_system_prompt, order_by, created_datetime_utc, modified_datetime_utc",
       )
+      .in("humor_flavor_id", flavorIds)
       .order("order_by", { ascending: true });
 
     if (fallbackStepsResponse.error) {
@@ -465,10 +485,6 @@ function toFlavorSlug(name: string) {
     .slice(0, 64);
 
   return slug || `flavor-${Date.now()}`;
-}
-
-function shouldAutoPurgeFlavor(flavor: FlavorWithSteps) {
-  return AUTO_PURGE_FLAVOR_NAMES.has(flavor.name.trim().toLowerCase());
 }
 
 async function deleteFlavorsByIds(
@@ -737,77 +753,21 @@ export default function HumorFlavorApp() {
     setDataLoading(true);
     setDataError(null);
 
-    void fetchFlavorsWithSteps(supabase)
+    void fetchFlavorsWithSteps(supabase, session.user.id)
       .then((nextFlavors) => {
         if (!active) {
           return;
         }
-
-        const purgeTargets = nextFlavors.filter(shouldAutoPurgeFlavor).map((flavor) => flavor.id);
-        if (!purgeTargets.length) {
-          setFlavors(nextFlavors);
-          setSelectedFlavorId((current) => {
-            if (!nextFlavors.length) {
-              return null;
-            }
-            if (current && nextFlavors.some((flavor) => flavor.id === current)) {
-              return current;
-            }
-            return nextFlavors[0].id;
-          });
-          return;
-        }
-
-        void deleteFlavorsByIds(supabase, purgeTargets)
-          .then((deleteErrorMessage) => {
-            if (!active) {
-              return;
-            }
-
-            if (deleteErrorMessage) {
-              setDataError(deleteErrorMessage);
-              setFlavors(nextFlavors);
-              setSelectedFlavorId((current) => {
-                if (!nextFlavors.length) {
-                  return null;
-                }
-                if (current && nextFlavors.some((flavor) => flavor.id === current)) {
-                  return current;
-                }
-                return nextFlavors[0].id;
-              });
-              return;
-            }
-
-            void fetchFlavorsWithSteps(supabase)
-              .then((refreshedFlavors) => {
-                if (!active) {
-                  return;
-                }
-                setFlavors(refreshedFlavors);
-                setSelectedFlavorId((current) => {
-                  if (!refreshedFlavors.length) {
-                    return null;
-                  }
-                  if (current && refreshedFlavors.some((flavor) => flavor.id === current)) {
-                    return current;
-                  }
-                  return refreshedFlavors[0].id;
-                });
-              })
-              .catch((error: unknown) => {
-                if (!active) {
-                  return;
-                }
-                setDataError(getErrorMessage(error, "Failed to load humor flavor data."));
-              });
-          })
-          .catch((error: unknown) => {
-            if (!active) {
-              return;
-            }
-            setDataError(getErrorMessage(error, "Failed to clean test humor flavors."));
-          });
+        setFlavors(nextFlavors);
+        setSelectedFlavorId((current) => {
+          if (!nextFlavors.length) {
+            return null;
+          }
+          if (current && nextFlavors.some((flavor) => flavor.id === current)) {
+            return current;
+          }
+          return nextFlavors[0].id;
+        });
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -1684,7 +1644,7 @@ export default function HumorFlavorApp() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Humor Flavor Prompt Chain Tool</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Manage humor flavors, define ordered steps, and test caption generation with the staging API.
+            Manage your humor flavors, define ordered steps, and test caption generation with the staging API.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
