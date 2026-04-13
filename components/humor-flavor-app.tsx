@@ -21,6 +21,23 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 ]);
 
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
+const STEP_TEMPLATE_SUGGESTIONS = [
+  {
+    title: "Describe image",
+    prompt:
+      "Describe the image literally. Identify the people/objects, visible actions, expressions, and any odd details.",
+  },
+  {
+    title: "Find funny angle",
+    prompt:
+      "Based on the description, identify the funniest contrast, mismatch, or awkward moment. Keep it specific to this image.",
+  },
+  {
+    title: "Generate 5 captions",
+    prompt:
+      "Write 5 short, punchy captions from the funny angle. Keep each caption under 16 words and avoid repeating phrasing.",
+  },
+] as const;
 
 interface FlavorRow {
   id: string | number;
@@ -196,6 +213,17 @@ function isMissingColumnError(error: { code?: string | null; message?: string | 
   return (
     error.code === "42703" ||
     Boolean(error.message?.includes("does not exist")) ||
+    Boolean(error.message?.includes("schema cache"))
+  );
+}
+
+function isMissingTableError(error: { code?: string | null; message?: string | null } | null) {
+  if (!error) {
+    return false;
+  }
+  return (
+    error.code === "PGRST205" ||
+    Boolean(error.message?.includes("Could not find the table")) ||
     Boolean(error.message?.includes("schema cache"))
   );
 }
@@ -1207,6 +1235,18 @@ export default function HumorFlavorApp() {
     setIsCreatingStep(false);
   }
 
+  function handleUseSuggestedNextStep() {
+    const suggestion =
+      STEP_TEMPLATE_SUGGESTIONS[Math.min(selectedSteps.length, STEP_TEMPLATE_SUGGESTIONS.length - 1)] ??
+      STEP_TEMPLATE_SUGGESTIONS[0];
+    if (!suggestion) {
+      return;
+    }
+
+    setNewStepTitle(suggestion.title);
+    setNewStepPrompt(suggestion.prompt);
+  }
+
   function updateStepDraft(stepId: string, draft: Partial<StepDraft>) {
     setStepDrafts((current) => ({
       ...current,
@@ -1532,11 +1572,16 @@ export default function HumorFlavorApp() {
 
       let persistenceErrorMessage: string | null = null;
       let persistenceSucceeded = false;
+      let historyTableMissing = false;
 
       for (const payload of captionRunCandidates) {
         const persistenceResponse = await supabase.from("humor_flavor_caption_runs").insert(payload);
         if (persistenceResponse.error) {
           persistenceErrorMessage = persistenceResponse.error.message;
+          if (isMissingTableError(persistenceResponse.error)) {
+            historyTableMissing = true;
+            break;
+          }
           continue;
         }
         persistenceSucceeded = true;
@@ -1544,9 +1589,15 @@ export default function HumorFlavorApp() {
       }
 
       if (!persistenceSucceeded) {
-        setPipelineWarning(
-          `Captions were generated but history save failed: ${persistenceErrorMessage ?? "Unknown error."}`,
-        );
+        if (historyTableMissing) {
+          setPipelineWarning(
+            "Captions generated successfully. Caption history storage is not configured in this environment yet.",
+          );
+        } else {
+          setPipelineWarning(
+            `Captions were generated but history save failed: ${persistenceErrorMessage ?? "Unknown error."}`,
+          );
+        }
       } else {
         setRunsRefreshToken((token) => token + 1);
       }
@@ -1783,6 +1834,15 @@ export default function HumorFlavorApp() {
                 <p className="mt-1 text-sm text-[var(--muted)]">
                   Steps run in ascending order and form your prompt chain.
                 </p>
+                <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+                  <p className="text-sm font-medium">Suggested 3-step template</p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    1) Describe image literally 2) Find funny angle 3) Generate 5 short captions.
+                  </p>
+                  <button className="secondary-btn mt-3 px-3 py-1 text-xs" type="button" onClick={handleUseSuggestedNextStep}>
+                    Use Suggested Next Step
+                  </button>
+                </div>
 
                 <form className="mt-4 grid gap-3 md:grid-cols-2" onSubmit={handleCreateStep}>
                   <label className="field-label">
