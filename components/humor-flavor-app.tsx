@@ -21,6 +21,7 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 ]);
 
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
+const LOCAL_CAPTION_RUNS_STORAGE_PREFIX = "humor-flavor-tool-local-caption-runs";
 const STEP_TEMPLATE_SUGGESTIONS = [
   {
     title: "Describe image",
@@ -235,6 +236,94 @@ function toIsoTimestamp(...values: Array<string | null | undefined>) {
     }
   }
   return new Date().toISOString();
+}
+
+function getLocalCaptionRunsStorageKey(userId: string, flavorId: string) {
+  return `${LOCAL_CAPTION_RUNS_STORAGE_PREFIX}:${userId}:${flavorId}`;
+}
+
+function readLocalCaptionRuns(userId: string, flavorId: string): CaptionRun[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getLocalCaptionRunsStorageKey(userId, flavorId));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const runs: CaptionRun[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const row = item as Record<string, unknown>;
+      const id = typeof row.id === "string" ? row.id : null;
+      const imageId = typeof row.image_id === "string" ? row.image_id : null;
+      if (!id || !imageId) {
+        continue;
+      }
+
+      runs.push({
+        id,
+        humor_flavor_id:
+          typeof row.humor_flavor_id === "string" ? row.humor_flavor_id : flavorId,
+        image_name: typeof row.image_name === "string" ? row.image_name : imageId,
+        image_id: imageId,
+        captions: toStringArray(row.captions),
+        raw_response: row.raw_response ?? null,
+        created_at: toIsoTimestamp(typeof row.created_at === "string" ? row.created_at : null),
+      });
+    }
+
+    return runs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalCaptionRun(userId: string, run: CaptionRun) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const existing = readLocalCaptionRuns(userId, run.humor_flavor_id);
+  const deduped = [run, ...existing.filter((item) => item.id !== run.id)];
+  const sorted = deduped.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  window.localStorage.setItem(
+    getLocalCaptionRunsStorageKey(userId, run.humor_flavor_id),
+    JSON.stringify(sorted.slice(0, 100)),
+  );
+}
+
+function removeLocalCaptionRuns(userId: string, flavorIds: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  for (const flavorId of flavorIds) {
+    window.localStorage.removeItem(getLocalCaptionRunsStorageKey(userId, flavorId));
+  }
+}
+
+function mergeCaptionRuns(primaryRuns: CaptionRun[], localRuns: CaptionRun[]) {
+  const byId = new Map<string, CaptionRun>();
+  for (const run of primaryRuns) {
+    byId.set(run.id, run);
+  }
+  for (const run of localRuns) {
+    if (!byId.has(run.id)) {
+      byId.set(run.id, run);
+    }
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
 }
 
 async function fetchOrderedStepRows(
@@ -850,12 +939,15 @@ export default function HumorFlavorApp() {
         if (!active) {
           return;
         }
-        setCaptionRuns(runs);
+        const localRuns = readLocalCaptionRuns(session.user.id, selectedFlavorId);
+        setCaptionRuns(mergeCaptionRuns(runs, localRuns));
       })
       .catch((error: unknown) => {
         if (!active) {
           return;
         }
+        const localRuns = readLocalCaptionRuns(session.user.id, selectedFlavorId);
+        setCaptionRuns(localRuns);
         setRunsError(getErrorMessage(error, "Failed to load caption history."));
       })
       .finally(() => {
@@ -1099,6 +1191,10 @@ export default function HumorFlavorApp() {
       return;
     }
 
+    if (session?.user?.id) {
+      removeLocalCaptionRuns(session.user.id, [selectedFlavorId]);
+    }
+
     setSelectedFlavorId(null);
     setDataRefreshToken((token) => token + 1);
     setRunsRefreshToken((token) => token + 1);
@@ -1131,6 +1227,10 @@ export default function HumorFlavorApp() {
       setDataError(deleteErrorMessage);
       setIsDeletingAllFlavors(false);
       return;
+    }
+
+    if (session?.user?.id) {
+      removeLocalCaptionRuns(session.user.id, flavorIds);
     }
 
     setSelectedFlavorId(null);
@@ -1589,13 +1689,27 @@ export default function HumorFlavorApp() {
       }
 
       if (!persistenceSucceeded) {
+        const localRun: CaptionRun = {
+          id: `local-${createId()}`,
+          humor_flavor_id: selectedFlavor.id,
+          image_name: selectedTestFile.file.name,
+          image_id: imageId,
+          captions,
+          raw_response: captionPayload,
+          created_at: new Date().toISOString(),
+        };
+        saveLocalCaptionRun(session.user.id, localRun);
+        setRunsRefreshToken((token) => token + 1);
+
         if (historyTableMissing) {
           setPipelineWarning(
-            "Captions generated successfully. Caption history storage is not configured in this environment yet.",
+            "Captions generated successfully. DB history table is missing, so this run was saved to local history in this browser.",
           );
         } else {
           setPipelineWarning(
-            `Captions were generated but history save failed: ${persistenceErrorMessage ?? "Unknown error."}`,
+            `Captions were generated. DB save failed, so this run was saved locally in this browser: ${
+              persistenceErrorMessage ?? "Unknown error."
+            }`,
           );
         }
       } else {
@@ -2035,6 +2149,9 @@ export default function HumorFlavorApp() {
 
               <section className="surface-card p-5">
                 <h2 className="text-xl font-semibold">Caption History for This Flavor</h2>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  History shows database runs and local fallback runs saved in this browser.
+                </p>
                 {runsLoading ? <p className="mt-2 text-sm text-[var(--muted)]">Loading caption history...</p> : null}
                 {runsError ? <p className="status-error mt-2">{runsError}</p> : null}
                 {!runsLoading && !runsError && !captionRuns.length ? (
