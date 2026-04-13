@@ -21,6 +21,19 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 ]);
 
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
+const AUTO_PURGE_FLAVOR_NAMES = new Set(
+  [
+    "codex-chaos-notes-1776097785233",
+    "codex-test-1776097342",
+    "co-lum-bia copy 2-copy",
+    "co-lum-bia copy 2",
+    "dwight-shrute copy",
+    "co-lum-bia copy",
+    "cool-test",
+    "dad-joke",
+    "eva",
+  ].map((name) => name.toLowerCase()),
+);
 
 interface FlavorRow {
   id: string | number;
@@ -454,6 +467,42 @@ function toFlavorSlug(name: string) {
   return slug || `flavor-${Date.now()}`;
 }
 
+function shouldAutoPurgeFlavor(flavor: FlavorWithSteps) {
+  return AUTO_PURGE_FLAVOR_NAMES.has(flavor.name.trim().toLowerCase());
+}
+
+async function deleteFlavorsByIds(
+  supabase: SupabaseClient,
+  flavorIds: string[],
+) {
+  if (!flavorIds.length) {
+    return null;
+  }
+
+  const runsDeleteResponse = await supabase
+    .from("humor_flavor_caption_runs")
+    .delete()
+    .in("humor_flavor_id", flavorIds);
+  if (runsDeleteResponse.error && runsDeleteResponse.error.code !== "PGRST205") {
+    return runsDeleteResponse.error.message;
+  }
+
+  const stepsDeleteResponse = await supabase
+    .from("humor_flavor_steps")
+    .delete()
+    .in("humor_flavor_id", flavorIds);
+  if (stepsDeleteResponse.error && stepsDeleteResponse.error.code !== "PGRST205") {
+    return stepsDeleteResponse.error.message;
+  }
+
+  const flavorDeleteResponse = await supabase.from("humor_flavors").delete().in("id", flavorIds);
+  if (flavorDeleteResponse.error && flavorDeleteResponse.error.code !== "PGRST205") {
+    return flavorDeleteResponse.error.message;
+  }
+
+  return null;
+}
+
 function resolveAuthRedirectOrigin() {
   const configuredOrigin = process.env.NEXT_PUBLIC_AUTH_REDIRECT_ORIGIN?.trim();
 
@@ -693,16 +742,72 @@ export default function HumorFlavorApp() {
         if (!active) {
           return;
         }
-        setFlavors(nextFlavors);
-        setSelectedFlavorId((current) => {
-          if (!nextFlavors.length) {
-            return null;
-          }
-          if (current && nextFlavors.some((flavor) => flavor.id === current)) {
-            return current;
-          }
-          return nextFlavors[0].id;
-        });
+
+        const purgeTargets = nextFlavors.filter(shouldAutoPurgeFlavor).map((flavor) => flavor.id);
+        if (!purgeTargets.length) {
+          setFlavors(nextFlavors);
+          setSelectedFlavorId((current) => {
+            if (!nextFlavors.length) {
+              return null;
+            }
+            if (current && nextFlavors.some((flavor) => flavor.id === current)) {
+              return current;
+            }
+            return nextFlavors[0].id;
+          });
+          return;
+        }
+
+        void deleteFlavorsByIds(supabase, purgeTargets)
+          .then((deleteErrorMessage) => {
+            if (!active) {
+              return;
+            }
+
+            if (deleteErrorMessage) {
+              setDataError(deleteErrorMessage);
+              setFlavors(nextFlavors);
+              setSelectedFlavorId((current) => {
+                if (!nextFlavors.length) {
+                  return null;
+                }
+                if (current && nextFlavors.some((flavor) => flavor.id === current)) {
+                  return current;
+                }
+                return nextFlavors[0].id;
+              });
+              return;
+            }
+
+            void fetchFlavorsWithSteps(supabase)
+              .then((refreshedFlavors) => {
+                if (!active) {
+                  return;
+                }
+                setFlavors(refreshedFlavors);
+                setSelectedFlavorId((current) => {
+                  if (!refreshedFlavors.length) {
+                    return null;
+                  }
+                  if (current && refreshedFlavors.some((flavor) => flavor.id === current)) {
+                    return current;
+                  }
+                  return refreshedFlavors[0].id;
+                });
+              })
+              .catch((error: unknown) => {
+                if (!active) {
+                  return;
+                }
+                setDataError(getErrorMessage(error, "Failed to load humor flavor data."));
+              });
+          })
+          .catch((error: unknown) => {
+            if (!active) {
+              return;
+            }
+            setDataError(getErrorMessage(error, "Failed to clean test humor flavors."));
+          });
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -1033,30 +1138,9 @@ export default function HumorFlavorApp() {
     setDataError(null);
 
     const flavorIds = flavors.map((flavor) => flavor.id);
-
-    const runsDeleteResponse = await supabase
-      .from("humor_flavor_caption_runs")
-      .delete()
-      .in("humor_flavor_id", flavorIds);
-    if (runsDeleteResponse.error && runsDeleteResponse.error.code !== "PGRST205") {
-      setDataError(runsDeleteResponse.error.message);
-      setIsDeletingAllFlavors(false);
-      return;
-    }
-
-    const stepsDeleteResponse = await supabase
-      .from("humor_flavor_steps")
-      .delete()
-      .in("humor_flavor_id", flavorIds);
-    if (stepsDeleteResponse.error && stepsDeleteResponse.error.code !== "PGRST205") {
-      setDataError(stepsDeleteResponse.error.message);
-      setIsDeletingAllFlavors(false);
-      return;
-    }
-
-    const flavorDeleteResponse = await supabase.from("humor_flavors").delete().in("id", flavorIds);
-    if (flavorDeleteResponse.error && flavorDeleteResponse.error.code !== "PGRST205") {
-      setDataError(flavorDeleteResponse.error.message);
+    const deleteErrorMessage = await deleteFlavorsByIds(supabase, flavorIds);
+    if (deleteErrorMessage) {
+      setDataError(deleteErrorMessage);
       setIsDeletingAllFlavors(false);
       return;
     }
