@@ -23,31 +23,41 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
 
 interface FlavorRow {
-  id: string;
-  name: string;
-  description: string | null;
-  created_at: string;
-  updated_at: string;
+  id: string | number;
+  name?: string | null;
+  slug?: string | null;
+  description?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  created_datetime_utc?: string | null;
+  modified_datetime_utc?: string | null;
 }
 
 interface StepRow {
-  id: string;
-  humor_flavor_id: string;
-  title: string;
-  prompt: string;
-  step_order: number;
-  created_at: string;
-  updated_at: string;
+  id: string | number;
+  humor_flavor_id: string | number;
+  title?: string | null;
+  prompt?: string | null;
+  description?: string | null;
+  llm_user_prompt?: string | null;
+  llm_system_prompt?: string | null;
+  step_order?: number | null;
+  order_by?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  created_datetime_utc?: string | null;
+  modified_datetime_utc?: string | null;
 }
 
 interface CaptionRunRow {
-  id: string;
-  humor_flavor_id: string;
-  image_name: string;
+  id: string | number;
+  humor_flavor_id: string | number;
+  image_name?: string | null;
   image_id: string;
   captions: unknown;
   raw_response: unknown;
-  created_at: string;
+  created_at?: string | null;
+  created_datetime_utc?: string | null;
 }
 
 interface StepDraft {
@@ -177,73 +187,237 @@ function extractCaptions(payload: unknown): string[] {
   return [];
 }
 
+function isMissingColumnError(error: { code?: string | null; message?: string | null } | null) {
+  if (!error) {
+    return false;
+  }
+  return (
+    error.code === "42703" ||
+    Boolean(error.message?.includes("does not exist")) ||
+    Boolean(error.message?.includes("schema cache"))
+  );
+}
+
+function toIsoTimestamp(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return new Date().toISOString();
+}
+
+async function fetchOrderedStepRows(
+  supabase: SupabaseClient,
+  flavorId: string,
+): Promise<Array<{ id: string; step_order: number }>> {
+  const primary = await supabase
+    .from("humor_flavor_steps")
+    .select("id, step_order")
+    .eq("humor_flavor_id", flavorId)
+    .order("step_order", { ascending: true });
+
+  if (!primary.error) {
+    return ((primary.data ?? []) as Array<{ id: string | number; step_order: number | null }>).map(
+      (step, index) => ({
+        id: String(step.id),
+        step_order: typeof step.step_order === "number" ? step.step_order : index + 1,
+      }),
+    );
+  }
+
+  if (!isMissingColumnError(primary.error)) {
+    throw new Error(primary.error.message);
+  }
+
+  const fallback = await supabase
+    .from("humor_flavor_steps")
+    .select("id, order_by")
+    .eq("humor_flavor_id", flavorId)
+    .order("order_by", { ascending: true });
+
+  if (fallback.error) {
+    throw new Error(fallback.error.message);
+  }
+
+  return ((fallback.data ?? []) as Array<{ id: string | number; order_by: number | null }>).map(
+    (step, index) => ({
+      id: String(step.id),
+      step_order: typeof step.order_by === "number" ? step.order_by : index + 1,
+    }),
+  );
+}
+
+async function persistStepOrder(
+  supabase: SupabaseClient,
+  stepId: string,
+  nextOrder: number,
+) {
+  const primary = await supabase
+    .from("humor_flavor_steps")
+    .update({ step_order: nextOrder })
+    .eq("id", stepId);
+
+  if (!primary.error) {
+    return null;
+  }
+
+  if (!isMissingColumnError(primary.error)) {
+    return primary.error;
+  }
+
+  const fallback = await supabase
+    .from("humor_flavor_steps")
+    .update({ order_by: nextOrder })
+    .eq("id", stepId);
+
+  return fallback.error ?? null;
+}
+
 async function fetchFlavorsWithSteps(supabase: SupabaseClient) {
-  const [flavorsResponse, stepsResponse] = await Promise.all([
-    supabase
+  let flavors: FlavorRow[] = [];
+  const primaryFlavorsResponse = await supabase
+    .from("humor_flavors")
+    .select("id, name, description, created_at, updated_at")
+    .order("created_at", { ascending: false });
+
+  if (primaryFlavorsResponse.error) {
+    if (!isMissingColumnError(primaryFlavorsResponse.error)) {
+      throw new Error(primaryFlavorsResponse.error.message);
+    }
+
+    const fallbackFlavorsResponse = await supabase
       .from("humor_flavors")
-      .select("id, name, description, created_at, updated_at")
-      .order("created_at", { ascending: false }),
-    supabase
+      .select("id, slug, description, created_datetime_utc, modified_datetime_utc")
+      .order("created_datetime_utc", { ascending: false });
+
+    if (fallbackFlavorsResponse.error) {
+      throw new Error(fallbackFlavorsResponse.error.message);
+    }
+
+    flavors = (fallbackFlavorsResponse.data ?? []) as FlavorRow[];
+  } else {
+    flavors = (primaryFlavorsResponse.data ?? []) as FlavorRow[];
+  }
+
+  let steps: StepRow[] = [];
+  const primaryStepsResponse = await supabase
+    .from("humor_flavor_steps")
+    .select("id, humor_flavor_id, title, prompt, step_order, created_at, updated_at")
+    .order("step_order", { ascending: true });
+
+  if (primaryStepsResponse.error) {
+    if (!isMissingColumnError(primaryStepsResponse.error)) {
+      throw new Error(primaryStepsResponse.error.message);
+    }
+
+    const fallbackStepsResponse = await supabase
       .from("humor_flavor_steps")
-      .select("id, humor_flavor_id, title, prompt, step_order, created_at, updated_at")
-      .order("step_order", { ascending: true }),
-  ]);
+      .select(
+        "id, humor_flavor_id, description, llm_user_prompt, llm_system_prompt, order_by, created_datetime_utc, modified_datetime_utc",
+      )
+      .order("order_by", { ascending: true });
 
-  if (flavorsResponse.error) {
-    throw new Error(flavorsResponse.error.message);
-  }
-  if (stepsResponse.error) {
-    throw new Error(stepsResponse.error.message);
-  }
+    if (fallbackStepsResponse.error) {
+      throw new Error(fallbackStepsResponse.error.message);
+    }
 
-  const flavors = (flavorsResponse.data ?? []) as FlavorRow[];
-  const steps = (stepsResponse.data ?? []) as StepRow[];
+    steps = (fallbackStepsResponse.data ?? []) as StepRow[];
+  } else {
+    steps = (primaryStepsResponse.data ?? []) as StepRow[];
+  }
 
   const stepsByFlavor = new Map<string, HumorFlavorStep[]>();
-  for (const step of steps) {
-    const current = stepsByFlavor.get(step.humor_flavor_id) ?? [];
+  for (const rawStep of steps) {
+    const flavorId = String(rawStep.humor_flavor_id);
+    const current = stepsByFlavor.get(flavorId) ?? [];
+    const stepOrder =
+      typeof rawStep.step_order === "number"
+        ? rawStep.step_order
+        : typeof rawStep.order_by === "number"
+          ? rawStep.order_by
+          : current.length + 1;
+    const title =
+      (typeof rawStep.title === "string" && rawStep.title.trim()) ||
+      (typeof rawStep.description === "string" && rawStep.description.trim()) ||
+      `Step ${stepOrder}`;
+    const prompt =
+      (typeof rawStep.prompt === "string" && rawStep.prompt.trim()) ||
+      (typeof rawStep.llm_user_prompt === "string" && rawStep.llm_user_prompt.trim()) ||
+      (typeof rawStep.llm_system_prompt === "string" && rawStep.llm_system_prompt.trim()) ||
+      "";
+
     current.push({
-      id: step.id,
-      humor_flavor_id: step.humor_flavor_id,
-      title: step.title,
-      prompt: step.prompt,
-      step_order: step.step_order,
-      created_at: step.created_at,
-      updated_at: step.updated_at,
+      id: String(rawStep.id),
+      humor_flavor_id: flavorId,
+      title,
+      prompt,
+      step_order: stepOrder,
+      created_at: toIsoTimestamp(rawStep.created_at, rawStep.created_datetime_utc),
+      updated_at: toIsoTimestamp(rawStep.updated_at, rawStep.modified_datetime_utc),
     });
-    stepsByFlavor.set(step.humor_flavor_id, current);
+    stepsByFlavor.set(flavorId, current);
   }
 
-  return flavors.map<FlavorWithSteps>((flavor) => ({
-    id: flavor.id,
-    name: flavor.name,
-    description: flavor.description,
-    created_at: flavor.created_at,
-    updated_at: flavor.updated_at,
-    steps: (stepsByFlavor.get(flavor.id) ?? []).sort((a, b) => a.step_order - b.step_order),
-  }));
+  return flavors.map<FlavorWithSteps>((rawFlavor) => {
+    const flavorId = String(rawFlavor.id);
+    const displayName =
+      (typeof rawFlavor.name === "string" && rawFlavor.name.trim()) ||
+      (typeof rawFlavor.slug === "string" && rawFlavor.slug.trim()) ||
+      `Flavor ${flavorId}`;
+
+    return {
+      id: flavorId,
+      name: displayName,
+      description: rawFlavor.description ?? null,
+      created_at: toIsoTimestamp(rawFlavor.created_at, rawFlavor.created_datetime_utc),
+      updated_at: toIsoTimestamp(
+        rawFlavor.updated_at,
+        rawFlavor.modified_datetime_utc,
+        rawFlavor.created_at,
+        rawFlavor.created_datetime_utc,
+      ),
+      steps: (stepsByFlavor.get(flavorId) ?? []).sort((a, b) => a.step_order - b.step_order),
+    };
+  });
 }
 
 async function fetchCaptionRuns(supabase: SupabaseClient, flavorId: string) {
-  const response = await supabase
+  let response = await supabase
     .from("humor_flavor_caption_runs")
     .select("id, humor_flavor_id, image_name, image_id, captions, raw_response, created_at")
     .eq("humor_flavor_id", flavorId)
     .order("created_at", { ascending: false });
 
   if (response.error) {
-    throw new Error(response.error.message);
+    if (response.error.code === "PGRST205") {
+      return [];
+    }
+
+    if (!isMissingColumnError(response.error)) {
+      throw new Error(response.error.message);
+    }
+
+    response = await supabase
+      .from("humor_flavor_caption_runs")
+      .select("id, humor_flavor_id, image_name, image_id, captions, raw_response, created_datetime_utc")
+      .eq("humor_flavor_id", flavorId)
+      .order("created_datetime_utc", { ascending: false });
+
+    if (response.error) {
+      return [];
+    }
   }
 
   const rows = (response.data ?? []) as CaptionRunRow[];
   return rows.map<CaptionRun>((row) => ({
-    id: row.id,
-    humor_flavor_id: row.humor_flavor_id,
-    image_name: row.image_name,
+    id: String(row.id),
+    humor_flavor_id: String(row.humor_flavor_id),
+    image_name: row.image_name ?? row.image_id,
     image_id: row.image_id,
     captions: toStringArray(row.captions),
     raw_response: row.raw_response,
-    created_at: row.created_at,
+    created_at: toIsoTimestamp(row.created_at, row.created_datetime_utc),
   }));
 }
 
@@ -863,6 +1037,20 @@ export default function HumorFlavorApp() {
       },
       {
         humor_flavor_id: selectedFlavorId,
+        description: title,
+        llm_user_prompt: prompt,
+        llm_system_prompt: "You are a caption generator. Return only valid JSON.",
+        llm_temperature: 0.7,
+        order_by: maxOrder,
+        llm_input_type_id: 1,
+        llm_output_type_id: 2,
+        llm_model_id: 1,
+        humor_flavor_step_type_id: 1,
+        created_by_user_id: session.user.id,
+        modified_by_user_id: session.user.id,
+      },
+      {
+        humor_flavor_id: selectedFlavorId,
         title,
         prompt,
         order_by: maxOrder,
@@ -932,13 +1120,44 @@ export default function HumorFlavorApp() {
     setStepSavingState((current) => ({ ...current, [stepId]: true }));
     setDataError(null);
 
-    const response = await supabase
-      .from("humor_flavor_steps")
-      .update({ title, prompt })
-      .eq("id", stepId);
+    const updateCandidates: Array<Record<string, unknown>> = [
+      { title, prompt },
+      { description: title, llm_user_prompt: prompt },
+    ];
 
-    if (response.error) {
-      setDataError(response.error.message);
+    if (session?.user?.id) {
+      updateCandidates.push({
+        title,
+        prompt,
+        modified_by_user_id: session.user.id,
+      });
+      updateCandidates.push({
+        description: title,
+        llm_user_prompt: prompt,
+        modified_by_user_id: session.user.id,
+      });
+    }
+
+    let saveStepSucceeded = false;
+    let saveStepErrorMessage: string | null = null;
+
+    for (const payload of updateCandidates) {
+      const response = await supabase
+        .from("humor_flavor_steps")
+        .update(payload)
+        .eq("id", stepId);
+
+      if (response.error) {
+        saveStepErrorMessage = response.error.message;
+        continue;
+      }
+
+      saveStepSucceeded = true;
+      break;
+    }
+
+    if (!saveStepSucceeded) {
+      setDataError(saveStepErrorMessage ?? "Failed to save step.");
     } else {
       setDataRefreshToken((token) => token + 1);
     }
@@ -966,26 +1185,20 @@ export default function HumorFlavorApp() {
       return;
     }
 
-    const stepsResponse = await supabase
-      .from("humor_flavor_steps")
-      .select("id, step_order")
-      .eq("humor_flavor_id", selectedFlavorId)
-      .order("step_order", { ascending: true });
-
-    if (stepsResponse.error) {
-      setDataError(stepsResponse.error.message);
+    let reorderTargets: Array<{ id: string; step_order: number }> = [];
+    try {
+      reorderTargets = await fetchOrderedStepRows(supabase, selectedFlavorId);
+    } catch (error: unknown) {
+      setDataError(getErrorMessage(error, "Failed to reorder steps."));
       setStepSavingState((current) => ({ ...current, [stepId]: false }));
       return;
     }
 
-    const reorderTargets = (stepsResponse.data ?? []) as Array<{ id: string; step_order: number }>;
     const updateResponses = await Promise.all(
-      reorderTargets.map((step, index) =>
-        supabase.from("humor_flavor_steps").update({ step_order: index + 1 }).eq("id", step.id),
-      ),
+      reorderTargets.map((step, index) => persistStepOrder(supabase, step.id, index + 1)),
     );
 
-    const firstError = updateResponses.find((response) => response.error)?.error;
+    const firstError = updateResponses.find((error) => Boolean(error));
     if (firstError) {
       setDataError(firstError.message);
     } else {
@@ -1018,12 +1231,10 @@ export default function HumorFlavorApp() {
     setDataError(null);
 
     const updates = await Promise.all(
-      reordered.map((step, index) =>
-        supabase.from("humor_flavor_steps").update({ step_order: index + 1 }).eq("id", step.id),
-      ),
+      reordered.map((step, index) => persistStepOrder(supabase, step.id, index + 1)),
     );
 
-    const firstError = updates.find((response) => response.error)?.error;
+    const firstError = updates.find((error) => Boolean(error));
     if (firstError) {
       setDataError(firstError.message);
     } else {
