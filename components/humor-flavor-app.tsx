@@ -501,6 +501,7 @@ export default function HumorFlavorApp() {
   const [flavorDraftDescription, setFlavorDraftDescription] = useState("");
   const [isSavingFlavor, setIsSavingFlavor] = useState(false);
   const [isDeletingFlavor, setIsDeletingFlavor] = useState(false);
+  const [isDeletingAllFlavors, setIsDeletingAllFlavors] = useState(false);
 
   const [stepDrafts, setStepDrafts] = useState<Record<string, StepDraft>>({});
   const [newStepTitle, setNewStepTitle] = useState("");
@@ -1009,6 +1010,67 @@ export default function HumorFlavorApp() {
     setDataRefreshToken((token) => token + 1);
     setRunsRefreshToken((token) => token + 1);
     setIsDeletingFlavor(false);
+  }
+
+  async function handleDeleteAllFlavors() {
+    if (!supabase || !flavors.length) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Delete ALL humor flavors, steps, and caption runs? This cannot be undone.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    const typedConfirmation = window.prompt('Type DELETE to confirm:');
+    if (typedConfirmation !== "DELETE") {
+      return;
+    }
+
+    setIsDeletingAllFlavors(true);
+    setDataError(null);
+
+    const flavorIds = flavors.map((flavor) => flavor.id);
+
+    const runsDeleteResponse = await supabase
+      .from("humor_flavor_caption_runs")
+      .delete()
+      .in("humor_flavor_id", flavorIds);
+    if (runsDeleteResponse.error && runsDeleteResponse.error.code !== "PGRST205") {
+      setDataError(runsDeleteResponse.error.message);
+      setIsDeletingAllFlavors(false);
+      return;
+    }
+
+    const stepsDeleteResponse = await supabase
+      .from("humor_flavor_steps")
+      .delete()
+      .in("humor_flavor_id", flavorIds);
+    if (stepsDeleteResponse.error && stepsDeleteResponse.error.code !== "PGRST205") {
+      setDataError(stepsDeleteResponse.error.message);
+      setIsDeletingAllFlavors(false);
+      return;
+    }
+
+    const flavorDeleteResponse = await supabase.from("humor_flavors").delete().in("id", flavorIds);
+    if (flavorDeleteResponse.error && flavorDeleteResponse.error.code !== "PGRST205") {
+      setDataError(flavorDeleteResponse.error.message);
+      setIsDeletingAllFlavors(false);
+      return;
+    }
+
+    setSelectedFlavorId(null);
+    setCaptionRuns([]);
+    setLatestCaptions([]);
+    setLatestRawResponse(null);
+    setPipelineStatus(null);
+    setPipelineError(null);
+    setPipelineWarning(null);
+    setDataRefreshToken((token) => token + 1);
+    setRunsRefreshToken((token) => token + 1);
+    setIsDeletingAllFlavors(false);
   }
 
   async function handleCreateStep(event: FormEvent<HTMLFormElement>) {
@@ -1588,6 +1650,14 @@ export default function HumorFlavorApp() {
               {isCreatingFlavor ? "Creating..." : "Create Flavor"}
             </button>
           </form>
+          <button
+            className="danger-btn mt-3 w-full"
+            type="button"
+            onClick={handleDeleteAllFlavors}
+            disabled={isDeletingAllFlavors || !flavors.length}
+          >
+            {isDeletingAllFlavors ? "Deleting all..." : "Delete All Flavors"}
+          </button>
 
           <div className="mt-5 space-y-2">
             {dataLoading && !flavors.length ? <p className="text-sm text-[var(--muted)]">Loading flavors...</p> : null}
