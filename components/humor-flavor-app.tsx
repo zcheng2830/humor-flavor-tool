@@ -91,6 +91,11 @@ interface TestImageFile {
   previewUrl: string;
 }
 
+interface FlavorListItem extends FlavorWithSteps {
+  latestCaptions: string[];
+  latestCaptionedAt: string | null;
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
     return error.message;
@@ -393,9 +398,88 @@ async function persistStepOrder(
   return fallback.error ?? null;
 }
 
+async function fetchLatestCaptionsByFlavor(
+  supabase: SupabaseClient,
+  flavorIds: string[],
+) {
+  if (!flavorIds.length) {
+    return new Map<string, { captions: string[]; createdAt: string | null }>();
+  }
+
+  const byFlavor = new Map<string, { captions: string[]; createdAt: string | null }>();
+
+  const primaryResponse = await supabase
+    .from("humor_flavor_caption_runs")
+    .select("humor_flavor_id, captions, created_at")
+    .in("humor_flavor_id", flavorIds)
+    .order("created_at", { ascending: false });
+
+  if (!primaryResponse.error) {
+    const rows = (primaryResponse.data ?? []) as Array<{
+      humor_flavor_id: string | number;
+      captions: unknown;
+      created_at?: string | null;
+    }>;
+
+    for (const row of rows) {
+      const flavorId = String(row.humor_flavor_id);
+      if (byFlavor.has(flavorId)) {
+        continue;
+      }
+
+      byFlavor.set(flavorId, {
+        captions: toStringArray(row.captions).slice(0, 5),
+        createdAt: toIsoTimestamp(row.created_at),
+      });
+    }
+
+    return byFlavor;
+  }
+
+  if (primaryResponse.error.code === "PGRST205") {
+    return byFlavor;
+  }
+
+  if (!isMissingColumnError(primaryResponse.error)) {
+    throw new Error(primaryResponse.error.message);
+  }
+
+  const fallbackResponse = await supabase
+    .from("humor_flavor_caption_runs")
+    .select("humor_flavor_id, captions, created_datetime_utc")
+    .in("humor_flavor_id", flavorIds)
+    .order("created_datetime_utc", { ascending: false });
+
+  if (fallbackResponse.error) {
+    if (fallbackResponse.error.code === "PGRST205") {
+      return byFlavor;
+    }
+    throw new Error(fallbackResponse.error.message);
+  }
+
+  const fallbackRows = (fallbackResponse.data ?? []) as Array<{
+    humor_flavor_id: string | number;
+    captions: unknown;
+    created_datetime_utc?: string | null;
+  }>;
+
+  for (const row of fallbackRows) {
+    const flavorId = String(row.humor_flavor_id);
+    if (byFlavor.has(flavorId)) {
+      continue;
+    }
+
+    byFlavor.set(flavorId, {
+      captions: toStringArray(row.captions).slice(0, 5),
+      createdAt: toIsoTimestamp(row.created_datetime_utc),
+    });
+  }
+
+  return byFlavor;
+}
+
 async function fetchFlavorsWithSteps(
   supabase: SupabaseClient,
-  userId: string,
 ) {
   const flavorQueryAttempts = [
     {
@@ -425,7 +509,6 @@ async function fetchFlavorsWithSteps(
     const response = await supabase
       .from("humor_flavors")
       .select(attempt.select)
-      .eq(attempt.ownerColumn, userId)
       .order(attempt.orderColumn, { ascending: false });
 
     if (response.error) {
@@ -447,6 +530,8 @@ async function fetchFlavorsWithSteps(
   if (!flavorIds.length) {
     return [];
   }
+
+  const latestCaptionsByFlavor = await fetchLatestCaptionsByFlavor(supabase, flavorIds);
 
   let steps: StepRow[] = [];
   const primaryStepsResponse = await supabase
@@ -509,12 +594,13 @@ async function fetchFlavorsWithSteps(
     stepsByFlavor.set(flavorId, current);
   }
 
-  return flavors.map<FlavorWithSteps>((rawFlavor) => {
+  return flavors.map<FlavorListItem>((rawFlavor) => {
     const flavorId = String(rawFlavor.id);
     const displayName =
       (typeof rawFlavor.name === "string" && rawFlavor.name.trim()) ||
       (typeof rawFlavor.slug === "string" && rawFlavor.slug.trim()) ||
       `Flavor ${flavorId}`;
+    const latestCaptionData = latestCaptionsByFlavor.get(flavorId);
 
     return {
       id: flavorId,
@@ -528,6 +614,8 @@ async function fetchFlavorsWithSteps(
         rawFlavor.created_datetime_utc,
       ),
       steps: (stepsByFlavor.get(flavorId) ?? []).sort((a, b) => a.step_order - b.step_order),
+      latestCaptions: latestCaptionData?.captions ?? [],
+      latestCaptionedAt: latestCaptionData?.createdAt ?? null,
     };
   });
 }
@@ -605,16 +693,20 @@ function toFlavorSlug(name: string) {
 }
 
 function normalizeFlavorName(name: string) {
-  return name.trim().toLowerCase();
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function makeUniqueFlavorName(baseName: string, existingNames: string[]) {
   const normalizedExisting = new Set(existingNames.map((name) => normalizeFlavorName(name)));
+  const existingSlugs = new Set(existingNames.map((name) => toFlavorSlug(name)));
   const seed = baseName.trim() || "Flavor Copy";
   let candidate = seed;
   let suffix = 2;
 
-  while (normalizedExisting.has(normalizeFlavorName(candidate))) {
+  while (
+    normalizedExisting.has(normalizeFlavorName(candidate)) ||
+    existingSlugs.has(toFlavorSlug(candidate))
+  ) {
     candidate = `${seed} (${suffix})`;
     suffix += 1;
   }
@@ -817,7 +909,7 @@ export default function HumorFlavorApp() {
 
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
 
-  const [flavors, setFlavors] = useState<FlavorWithSteps[]>([]);
+  const [flavors, setFlavors] = useState<FlavorListItem[]>([]);
   const [selectedFlavorId, setSelectedFlavorId] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
@@ -1019,7 +1111,7 @@ export default function HumorFlavorApp() {
     setDataLoading(true);
     setDataError(null);
 
-    void fetchFlavorsWithSteps(supabase, session.user.id)
+    void fetchFlavorsWithSteps(supabase)
       .then((nextFlavors) => {
         if (!active) {
           return;
@@ -1206,9 +1298,10 @@ export default function HumorFlavorApp() {
       return;
     }
 
+    const existingFlavorNames = flavors.map((flavor) => flavor.name);
     const suggestedName = makeUniqueFlavorName(
       `${selectedFlavor.name} Copy`,
-      flavors.map((flavor) => flavor.name),
+      existingFlavorNames,
     );
     const requestedName = window.prompt("Name for duplicated flavor:", suggestedName);
     if (requestedName === null) {
@@ -1221,18 +1314,13 @@ export default function HumorFlavorApp() {
       return;
     }
 
-    const normalizedName = normalizeFlavorName(name);
-    const existingNames = new Set(flavors.map((flavor) => normalizeFlavorName(flavor.name)));
-    if (existingNames.has(normalizedName)) {
-      setDataError("Flavor name must be unique.");
-      return;
-    }
+    const resolvedName = makeUniqueFlavorName(name, existingFlavorNames);
 
     setIsDuplicatingFlavor(true);
     setDataError(null);
 
     const { createdFlavorId, createErrorMessage } = await insertFlavorWithFallback(supabase, {
-      name,
+      name: resolvedName,
       description: selectedFlavor.description ?? null,
       userId: session.user.id,
     });
@@ -2021,6 +2109,25 @@ export default function HumorFlavorApp() {
               >
                 <p className="font-medium">{flavor.name}</p>
                 <p className="text-xs text-[var(--muted)]">{flavor.steps.length} step(s)</p>
+                {flavor.description ? (
+                  <p className="mt-2 line-clamp-2 text-xs text-[var(--muted)]">{flavor.description}</p>
+                ) : null}
+                <div className="mt-3 border-t border-[var(--border)] pt-3">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+                    Latest 5 Captions
+                  </p>
+                  {flavor.latestCaptions.length ? (
+                    <ul className="mt-2 space-y-1 text-xs text-[var(--foreground)]/88">
+                      {flavor.latestCaptions.map((caption, index) => (
+                        <li key={`${flavor.id}-preview-${index}`} className="line-clamp-2">
+                          {caption}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-[var(--muted)]">No generated captions yet.</p>
+                  )}
+                </div>
               </button>
             ))}
           </div>
