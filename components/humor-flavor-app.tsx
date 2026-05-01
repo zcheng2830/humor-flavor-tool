@@ -604,6 +604,154 @@ function toFlavorSlug(name: string) {
   return slug || `flavor-${Date.now()}`;
 }
 
+function normalizeFlavorName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function makeUniqueFlavorName(baseName: string, existingNames: string[]) {
+  const normalizedExisting = new Set(existingNames.map((name) => normalizeFlavorName(name)));
+  const seed = baseName.trim() || "Flavor Copy";
+  let candidate = seed;
+  let suffix = 2;
+
+  while (normalizedExisting.has(normalizeFlavorName(candidate))) {
+    candidate = `${seed} (${suffix})`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+async function insertFlavorWithFallback(
+  supabase: SupabaseClient,
+  payload: {
+    name: string;
+    description: string | null;
+    userId: string;
+  },
+) {
+  const slug = toFlavorSlug(payload.name);
+  const insertCandidates: Array<Record<string, unknown>> = [
+    {
+      name: payload.name,
+      description: payload.description,
+      created_by: payload.userId,
+    },
+    {
+      name: payload.name,
+      description: payload.description,
+      created_by_user_id: payload.userId,
+      modified_by_user_id: payload.userId,
+    },
+    {
+      slug,
+      description: payload.description,
+      created_by_user_id: payload.userId,
+      modified_by_user_id: payload.userId,
+    },
+    {
+      slug,
+      description: payload.description,
+      created_by: payload.userId,
+    },
+  ];
+
+  let createdFlavorId: string | null = null;
+  let createErrorMessage: string | null = null;
+
+  for (const candidate of insertCandidates) {
+    const { data, error } = await supabase
+      .from("humor_flavors")
+      .insert(candidate)
+      .select("id")
+      .single();
+
+    if (error) {
+      createErrorMessage = error.message;
+      continue;
+    }
+
+    createdFlavorId =
+      data && typeof data === "object" && "id" in data ? String(data.id as string | number) : null;
+    break;
+  }
+
+  return { createdFlavorId, createErrorMessage };
+}
+
+async function insertFlavorStepWithFallback(
+  supabase: SupabaseClient,
+  payload: {
+    flavorId: string;
+    title: string;
+    prompt: string;
+    stepOrder: number;
+    userId: string;
+  },
+) {
+  const insertCandidates: Array<Record<string, unknown>> = [
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      step_order: payload.stepOrder,
+      created_by: payload.userId,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      step_order: payload.stepOrder,
+      created_by_user_id: payload.userId,
+      modified_by_user_id: payload.userId,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      description: payload.title,
+      llm_user_prompt: payload.prompt,
+      llm_system_prompt: "You are a caption generator. Return only valid JSON.",
+      llm_temperature: 0.7,
+      order_by: payload.stepOrder,
+      llm_input_type_id: 1,
+      llm_output_type_id: 2,
+      llm_model_id: 1,
+      humor_flavor_step_type_id: 1,
+      created_by_user_id: payload.userId,
+      modified_by_user_id: payload.userId,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      order_by: payload.stepOrder,
+      created_by_user_id: payload.userId,
+      modified_by_user_id: payload.userId,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      order_by: payload.stepOrder,
+      created_by: payload.userId,
+    },
+  ];
+
+  let createStepErrorMessage: string | null = null;
+  let createStepSucceeded = false;
+
+  for (const candidate of insertCandidates) {
+    const response = await supabase.from("humor_flavor_steps").insert(candidate);
+    if (response.error) {
+      createStepErrorMessage = response.error.message;
+      continue;
+    }
+    createStepSucceeded = true;
+    break;
+  }
+
+  return { createStepSucceeded, createStepErrorMessage };
+}
+
 async function deleteFlavorsByIds(
   supabase: SupabaseClient,
   flavorIds: string[],
@@ -683,6 +831,7 @@ export default function HumorFlavorApp() {
   const [flavorDraftDescription, setFlavorDraftDescription] = useState("");
   const [isSavingFlavor, setIsSavingFlavor] = useState(false);
   const [isDeletingFlavor, setIsDeletingFlavor] = useState(false);
+  const [isDuplicatingFlavor, setIsDuplicatingFlavor] = useState(false);
   const [isDeletingAllFlavors, setIsDeletingAllFlavors] = useState(false);
 
   const [stepDrafts, setStepDrafts] = useState<Record<string, StepDraft>>({});
@@ -1033,51 +1182,11 @@ export default function HumorFlavorApp() {
     setDataError(null);
 
     const description = newFlavorDescription.trim() || null;
-    const slug = toFlavorSlug(name);
-    const insertCandidates: Array<Record<string, unknown>> = [
-      {
-        name,
-        description,
-        created_by: session.user.id,
-      },
-      {
-        name,
-        description,
-        created_by_user_id: session.user.id,
-        modified_by_user_id: session.user.id,
-      },
-      {
-        slug,
-        description,
-        created_by_user_id: session.user.id,
-        modified_by_user_id: session.user.id,
-      },
-      {
-        slug,
-        description,
-        created_by: session.user.id,
-      },
-    ];
-
-    let createdFlavorId: string | null = null;
-    let createErrorMessage: string | null = null;
-
-    for (const payload of insertCandidates) {
-      const { data, error } = await supabase
-        .from("humor_flavors")
-        .insert(payload)
-        .select("id")
-        .single();
-
-      if (error) {
-        createErrorMessage = error.message;
-        continue;
-      }
-
-      createdFlavorId =
-        data && typeof data === "object" && "id" in data ? String(data.id as string | number) : null;
-      break;
-    }
+    const { createdFlavorId, createErrorMessage } = await insertFlavorWithFallback(supabase, {
+      name,
+      description,
+      userId: session.user.id,
+    });
 
     if (!createdFlavorId) {
       setDataError(createErrorMessage ?? "Failed to create flavor.");
@@ -1090,6 +1199,84 @@ export default function HumorFlavorApp() {
     setSelectedFlavorId(createdFlavorId);
     setDataRefreshToken((token) => token + 1);
     setIsCreatingFlavor(false);
+  }
+
+  async function handleDuplicateFlavor() {
+    if (!supabase || !session || !selectedFlavor) {
+      return;
+    }
+
+    const suggestedName = makeUniqueFlavorName(
+      `${selectedFlavor.name} Copy`,
+      flavors.map((flavor) => flavor.name),
+    );
+    const requestedName = window.prompt("Name for duplicated flavor:", suggestedName);
+    if (requestedName === null) {
+      return;
+    }
+
+    const name = requestedName.trim();
+    if (!name) {
+      setDataError("Humor flavor name is required.");
+      return;
+    }
+
+    const normalizedName = normalizeFlavorName(name);
+    const existingNames = new Set(flavors.map((flavor) => normalizeFlavorName(flavor.name)));
+    if (existingNames.has(normalizedName)) {
+      setDataError("Flavor name must be unique.");
+      return;
+    }
+
+    setIsDuplicatingFlavor(true);
+    setDataError(null);
+
+    const { createdFlavorId, createErrorMessage } = await insertFlavorWithFallback(supabase, {
+      name,
+      description: selectedFlavor.description ?? null,
+      userId: session.user.id,
+    });
+
+    if (!createdFlavorId) {
+      setDataError(createErrorMessage ?? "Failed to duplicate flavor.");
+      setIsDuplicatingFlavor(false);
+      return;
+    }
+
+    const orderedSteps = [...selectedFlavor.steps].sort((a, b) => a.step_order - b.step_order);
+    let createStepErrorMessage: string | null = null;
+
+    for (const step of orderedSteps) {
+      const response = await insertFlavorStepWithFallback(supabase, {
+        flavorId: createdFlavorId,
+        title: step.title,
+        prompt: step.prompt,
+        stepOrder: step.step_order,
+        userId: session.user.id,
+      });
+
+      if (!response.createStepSucceeded) {
+        createStepErrorMessage = response.createStepErrorMessage ?? "Failed to duplicate step.";
+        break;
+      }
+    }
+
+    if (createStepErrorMessage) {
+      const rollbackError = await deleteFlavorsByIds(supabase, [createdFlavorId]);
+      if (rollbackError) {
+        setDataError(
+          `Failed to duplicate steps: ${createStepErrorMessage}. Cleanup failed: ${rollbackError}`,
+        );
+      } else {
+        setDataError(`Failed to duplicate steps: ${createStepErrorMessage}`);
+      }
+      setIsDuplicatingFlavor(false);
+      return;
+    }
+
+    setSelectedFlavorId(createdFlavorId);
+    setDataRefreshToken((token) => token + 1);
+    setIsDuplicatingFlavor(false);
   }
 
   async function handleSaveFlavor() {
@@ -1264,65 +1451,13 @@ export default function HumorFlavorApp() {
     const maxOrder =
       selectedFlavor.steps.reduce((currentMax, step) => Math.max(currentMax, step.step_order), 0) + 1;
 
-    const insertCandidates: Array<Record<string, unknown>> = [
-      {
-        humor_flavor_id: selectedFlavorId,
-        title,
-        prompt,
-        step_order: maxOrder,
-        created_by: session.user.id,
-      },
-      {
-        humor_flavor_id: selectedFlavorId,
-        title,
-        prompt,
-        step_order: maxOrder,
-        created_by_user_id: session.user.id,
-        modified_by_user_id: session.user.id,
-      },
-      {
-        humor_flavor_id: selectedFlavorId,
-        description: title,
-        llm_user_prompt: prompt,
-        llm_system_prompt: "You are a caption generator. Return only valid JSON.",
-        llm_temperature: 0.7,
-        order_by: maxOrder,
-        llm_input_type_id: 1,
-        llm_output_type_id: 2,
-        llm_model_id: 1,
-        humor_flavor_step_type_id: 1,
-        created_by_user_id: session.user.id,
-        modified_by_user_id: session.user.id,
-      },
-      {
-        humor_flavor_id: selectedFlavorId,
-        title,
-        prompt,
-        order_by: maxOrder,
-        created_by_user_id: session.user.id,
-        modified_by_user_id: session.user.id,
-      },
-      {
-        humor_flavor_id: selectedFlavorId,
-        title,
-        prompt,
-        order_by: maxOrder,
-        created_by: session.user.id,
-      },
-    ];
-
-    let createStepErrorMessage: string | null = null;
-    let createStepSucceeded = false;
-
-    for (const payload of insertCandidates) {
-      const response = await supabase.from("humor_flavor_steps").insert(payload);
-      if (response.error) {
-        createStepErrorMessage = response.error.message;
-        continue;
-      }
-      createStepSucceeded = true;
-      break;
-    }
+    const { createStepSucceeded, createStepErrorMessage } = await insertFlavorStepWithFallback(supabase, {
+      flavorId: selectedFlavorId,
+      title,
+      prompt,
+      stepOrder: maxOrder,
+      userId: session.user.id,
+    });
 
     if (!createStepSucceeded) {
       setDataError(createStepErrorMessage ?? "Failed to create step.");
@@ -1905,14 +2040,24 @@ export default function HumorFlavorApp() {
               <section className="surface-card p-5">
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <h2 className="text-xl font-semibold">Flavor Details</h2>
-                  <button
-                    className="danger-btn"
-                    type="button"
-                    onClick={handleDeleteFlavor}
-                    disabled={isDeletingFlavor}
-                  >
-                    {isDeletingFlavor ? "Deleting..." : "Delete Flavor"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="secondary-btn"
+                      type="button"
+                      onClick={handleDuplicateFlavor}
+                      disabled={isDuplicatingFlavor || isDeletingFlavor}
+                    >
+                      {isDuplicatingFlavor ? "Duplicating..." : "Duplicate Flavor"}
+                    </button>
+                    <button
+                      className="danger-btn"
+                      type="button"
+                      onClick={handleDeleteFlavor}
+                      disabled={isDeletingFlavor || isDuplicatingFlavor}
+                    >
+                      {isDeletingFlavor ? "Deleting..." : "Delete Flavor"}
+                    </button>
+                  </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="field-label">

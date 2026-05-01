@@ -7,7 +7,7 @@ Admin-only prompt-chain manager for creating and testing humor flavors against t
 - Google OAuth sign-in gate
 - Admin gate: app works only when `profiles.is_superadmin = true` or `profiles.is_matrix_admin = true`
 - Humor flavor CRUD:
-  - Create, update, delete flavors
+  - Create, duplicate, update, delete flavors
 - Humor flavor step CRUD:
   - Create, update, delete steps
   - Reorder steps (move up / move down)
