@@ -160,56 +160,187 @@ function toStringArray(value: unknown): string[] {
   return [];
 }
 
-function extractCaptions(payload: unknown): string[] {
-  if (!payload) {
+function splitCaptionText(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return [];
   }
 
-  if (typeof payload === "string") {
-    const trimmed = payload.trim();
-    return trimmed ? [trimmed] : [];
-  }
-
-  if (Array.isArray(payload)) {
-    const captions = payload.flatMap((item) => {
-      if (typeof item === "string") {
-        return item.trim() ? [item.trim()] : [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed !== value) {
+      const extracted = extractCaptions(parsed);
+      if (extracted.length) {
+        return extracted;
       }
-
-      if (item && typeof item === "object") {
-        const record = item as Record<string, unknown>;
-        const direct =
-          (typeof record.caption === "string" && record.caption.trim()) ||
-          (typeof record.text === "string" && record.text.trim()) ||
-          (typeof record.output === "string" && record.output.trim()) ||
-          (typeof record.generated_caption === "string" && record.generated_caption.trim());
-        if (direct) {
-          return [direct];
-        }
-
-        if (Array.isArray(record.captions)) {
-          return record.captions
-            .map((entry) => (typeof entry === "string" ? entry.trim() : String(entry).trim()))
-            .filter(Boolean);
-        }
-      }
-
-      return [];
-    });
-
-    return captions;
-  }
-
-  if (payload && typeof payload === "object") {
-    const record = payload as Record<string, unknown>;
-    if (Array.isArray(record.captions)) {
-      return record.captions
-        .map((entry) => (typeof entry === "string" ? entry.trim() : String(entry).trim()))
-        .filter(Boolean);
     }
+  } catch {
+    // Ignore parse failures and continue with plain-text extraction.
   }
 
-  return [];
+  const lines = trimmed
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
+    .filter(Boolean);
+
+  if (lines.length >= 2) {
+    return lines;
+  }
+
+  return [trimmed];
+}
+
+function extractCaptions(payload: unknown): string[] {
+  const seen = new Set<object>();
+
+  function visit(value: unknown): string[] {
+    if (!value) {
+      return [];
+    }
+
+    if (typeof value === "string") {
+      return splitCaptionText(value);
+    }
+
+    if (Array.isArray(value)) {
+      const nested = value.flatMap((item) => visit(item));
+      return nested.length ? nested : toStringArray(value);
+    }
+
+    if (typeof value !== "object") {
+      return [];
+    }
+
+    if (seen.has(value)) {
+      return [];
+    }
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    const directKeys = [
+      "captions",
+      "generatedCaptions",
+      "generated_captions",
+      "captionList",
+      "caption_list",
+      "items",
+      "results",
+      "result",
+      "data",
+      "response",
+      "responses",
+      "output",
+      "outputs",
+      "content",
+      "message",
+      "messages",
+      "text",
+      "completion",
+      "choices",
+      "caption",
+      "generated_caption",
+    ] as const;
+
+    for (const key of directKeys) {
+      if (!(key in record)) {
+        continue;
+      }
+
+      const nested = visit(record[key]);
+      if (nested.length) {
+        return nested;
+      }
+    }
+
+    for (const nestedValue of Object.values(record)) {
+      const nested = visit(nestedValue);
+      if (nested.length) {
+        return nested;
+      }
+    }
+
+    return [];
+  }
+
+  return Array.from(new Set(visit(payload).map((caption) => caption.trim()).filter(Boolean)));
+}
+
+function extractReadableTextSnippets(payload: unknown): string[] {
+  const seen = new Set<object>();
+
+  function visit(value: unknown): string[] {
+    if (!value) {
+      return [];
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return [];
+      }
+
+      const parsedCaptions = extractCaptions(trimmed);
+      if (parsedCaptions.length > 1) {
+        return parsedCaptions;
+      }
+
+      return [trimmed];
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => visit(item));
+    }
+
+    if (typeof value !== "object") {
+      return [];
+    }
+
+    if (seen.has(value)) {
+      return [];
+    }
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    const preferredKeys = ["content", "text", "message", "output", "description", "response"] as const;
+
+    for (const key of preferredKeys) {
+      if (key in record) {
+        const nested = visit(record[key]);
+        if (nested.length) {
+          return nested;
+        }
+      }
+    }
+
+    return Object.values(record).flatMap((nestedValue) => visit(nestedValue));
+  }
+
+  return Array.from(new Set(visit(payload).map((snippet) => snippet.trim()).filter(Boolean)));
+}
+
+function summarizeResponseKind(payload: unknown, captions: string[]) {
+  if (captions.length) {
+    return {
+      title: "Captions ready",
+      message: "The pipeline returned caption-like output for this run.",
+      snippets: [] as string[],
+    };
+  }
+
+  const snippets = extractReadableTextSnippets(payload).slice(0, 3);
+  if (!snippets.length) {
+    return {
+      title: "No captions detected",
+      message: "The API responded, but the tool could not find any caption-like text in the payload.",
+      snippets,
+    };
+  }
+
+  return {
+    title: "Pipeline returned step output",
+    message: "This run looks like prompt-chain analysis or intermediate steps, not final caption results.",
+    snippets,
+  };
 }
 
 function isMissingColumnError(error: { code?: string | null; message?: string | null } | null) {
@@ -918,6 +1049,7 @@ export default function HumorFlavorApp() {
   const [newFlavorName, setNewFlavorName] = useState("");
   const [newFlavorDescription, setNewFlavorDescription] = useState("");
   const [isCreatingFlavor, setIsCreatingFlavor] = useState(false);
+  const [flavorSearch, setFlavorSearch] = useState("");
 
   const [flavorDraftName, setFlavorDraftName] = useState("");
   const [flavorDraftDescription, setFlavorDraftDescription] = useState("");
@@ -953,6 +1085,19 @@ export default function HumorFlavorApp() {
   const selectedSteps = [...(selectedFlavor?.steps ?? [])].sort((a, b) => a.step_order - b.step_order);
   const selectedTestFile = testFiles.find((entry) => entry.id === selectedTestFileId) ?? null;
   const userIsAdmin = isAdminProfile(profile);
+  const filteredFlavors = flavors.filter((flavor) => {
+    const query = flavorSearch.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+
+    return (
+      flavor.name.toLowerCase().includes(query) ||
+      (flavor.description ?? "").toLowerCase().includes(query) ||
+      flavor.latestCaptions.some((caption) => caption.toLowerCase().includes(query))
+    );
+  });
+  const latestRunSummary = summarizeResponseKind(latestRawResponse, latestCaptions);
 
   useEffect(() => {
     try {
@@ -2032,7 +2177,7 @@ export default function HumorFlavorApp() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Humor Flavor Prompt Chain Tool</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Manage your humor flavors, define ordered steps, and test caption generation with the staging API.
+            Browse humor flavors, refine prompt steps, and test image captions without needing to dig through raw JSON.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -2056,7 +2201,17 @@ export default function HumorFlavorApp() {
 
       <section className="grid gap-5 lg:grid-cols-[320px_1fr]">
         <aside className="surface-card p-4">
-          <h2 className="text-lg font-semibold">Humor Flavors</h2>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Humor Flavors</h2>
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                Explore existing styles or create your own. Recent caption previews help you judge each flavor quickly.
+              </p>
+            </div>
+            <div className="rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-1 text-xs text-[var(--muted)]">
+              {flavors.length} total
+            </div>
+          </div>
           <form className="mt-4 space-y-3" onSubmit={handleCreateFlavor}>
             <label className="field-label">
               Name
@@ -2091,12 +2246,26 @@ export default function HumorFlavorApp() {
             {isDeletingAllFlavors ? "Deleting all..." : "Delete All Flavors"}
           </button>
 
+          <label className="field-label mt-4">
+            Search flavors
+            <input
+              className="field-input mt-1"
+              type="text"
+              value={flavorSearch}
+              onChange={(event) => setFlavorSearch(event.target.value)}
+              placeholder="Search by name, description, or preview caption"
+            />
+          </label>
+
           <div className="mt-5 space-y-2">
             {dataLoading && !flavors.length ? <p className="text-sm text-[var(--muted)]">Loading flavors...</p> : null}
             {!dataLoading && !flavors.length ? (
               <p className="text-sm text-[var(--muted)]">No humor flavors yet.</p>
             ) : null}
-            {flavors.map((flavor) => (
+            {!dataLoading && flavors.length > 0 && !filteredFlavors.length ? (
+              <p className="text-sm text-[var(--muted)]">No flavors match that search yet.</p>
+            ) : null}
+            {filteredFlavors.map((flavor) => (
               <button
                 key={flavor.id}
                 type="button"
@@ -2138,12 +2307,39 @@ export default function HumorFlavorApp() {
 
           {!selectedFlavor ? (
             <section className="surface-card p-6">
-              <p className="text-sm text-[var(--muted)]">
-                Select a humor flavor from the left panel, or create one to get started.
+              <h2 className="text-lg font-semibold">Pick a flavor to get started</h2>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Choose a flavor from the left to inspect its steps, run a test image, and review previous outputs.
               </p>
             </section>
           ) : (
             <>
+              <section className="surface-card p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-[0.1em] text-[var(--muted)]">Selected Flavor</p>
+                    <h2 className="mt-1 text-2xl font-semibold">{selectedFlavor.name}</h2>
+                    <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
+                      {selectedFlavor.description?.trim() || "No description yet. Add one so teammates can tell what this humor flavor is supposed to sound like."}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2">
+                      <p className="text-lg font-semibold">{selectedFlavor.steps.length}</p>
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">Steps</p>
+                    </div>
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2">
+                      <p className="text-lg font-semibold">{captionRuns.length}</p>
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">Saved Runs</p>
+                    </div>
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2">
+                      <p className="text-lg font-semibold">{selectedFlavor.latestCaptions.length || 0}</p>
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">Preview Lines</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <section className="surface-card p-5">
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <h2 className="text-xl font-semibold">Flavor Details</h2>
@@ -2314,7 +2510,7 @@ export default function HumorFlavorApp() {
               <section className="surface-card p-5">
                 <h2 className="text-xl font-semibold">Test Flavor with API Pipeline</h2>
                 <p className="mt-1 text-sm text-[var(--muted)]">
-                  Upload image files to your test set, then run the 4-step API pipeline using this flavor.
+                  Upload one or more images, pick one, then run the 4-step pipeline. The tool will try to show final captions first and explain clearly if the API only returns intermediate analysis.
                 </p>
 
                 <label className="field-label mt-4">
@@ -2378,20 +2574,48 @@ export default function HumorFlavorApp() {
                 {pipelineWarning ? <p className="status-warn mt-2">{pipelineWarning}</p> : null}
                 {pipelineError ? <p className="status-error mt-2">{pipelineError}</p> : null}
 
-                {latestCaptions.length > 0 ? (
+                {latestRawResponse ? (
                   <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
-                    <h3 className="font-semibold">Latest Captions</h3>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-                      {latestCaptions.map((caption, index) => (
-                        <li key={`${caption}-${index}`}>{caption}</li>
-                      ))}
-                    </ul>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold">{latestRunSummary.title}</h3>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{latestRunSummary.message}</p>
+                      </div>
+                      {latestCaptions.length ? (
+                        <div className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs text-[var(--muted)]">
+                          {latestCaptions.length} caption{latestCaptions.length === 1 ? "" : "s"} found
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {latestCaptions.length > 0 ? (
+                      <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+                        {latestCaptions.map((caption, index) => (
+                          <li key={`${caption}-${index}`}>{caption}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+
+                    {!latestCaptions.length && latestRunSummary.snippets.length ? (
+                      <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                        <p className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+                          What the API returned
+                        </p>
+                        <ul className="mt-2 space-y-2 text-sm text-[var(--muted)]">
+                          {latestRunSummary.snippets.map((snippet, index) => (
+                            <li key={`snippet-${index}`} className="line-clamp-4">
+                              {snippet}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
                 {latestRawResponse ? (
                   <details className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
-                    <summary className="cursor-pointer font-semibold">Latest Raw API Response</summary>
+                    <summary className="cursor-pointer font-semibold">Debug: Latest Raw API Response</summary>
                     <pre className="mt-2 overflow-auto text-xs text-[var(--muted)]">
                       {JSON.stringify(latestRawResponse, null, 2)}
                     </pre>
@@ -2402,7 +2626,7 @@ export default function HumorFlavorApp() {
               <section className="surface-card p-5">
                 <h2 className="text-xl font-semibold">Caption History for This Flavor</h2>
                 <p className="mt-1 text-xs text-[var(--muted)]">
-                  History shows database runs and local fallback runs saved in this browser.
+                  This includes both database history and local browser fallback history, so you still keep the run even if the history table is missing.
                 </p>
                 {runsLoading ? <p className="mt-2 text-sm text-[var(--muted)]">Loading caption history...</p> : null}
                 {runsError ? <p className="status-error mt-2">{runsError}</p> : null}
@@ -2415,13 +2639,29 @@ export default function HumorFlavorApp() {
                       <p className="text-xs text-[var(--muted)]">
                         {new Date(run.created_at).toLocaleString()} • {run.image_name}
                       </p>
-                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-                        {run.captions.length ? (
-                          run.captions.map((caption, index) => <li key={`${run.id}-${index}`}>{caption}</li>)
-                        ) : (
-                          <li>No parsed captions found in saved run.</li>
-                        )}
-                      </ul>
+                      {run.captions.length ? (
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                          {run.captions.map((caption, index) => <li key={`${run.id}-${index}`}>{caption}</li>)}
+                        </ul>
+                      ) : (
+                        <div className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                          <p className="text-sm font-medium">No final captions were parsed for this run.</p>
+                          <p className="mt-1 text-sm text-[var(--muted)]">
+                            The API may have returned intermediate analysis instead of final caption lines.
+                          </p>
+                          {extractReadableTextSnippets(run.raw_response).slice(0, 2).length ? (
+                            <ul className="mt-2 space-y-2 text-sm text-[var(--muted)]">
+                              {extractReadableTextSnippets(run.raw_response)
+                                .slice(0, 2)
+                                .map((snippet, index) => (
+                                  <li key={`${run.id}-snippet-${index}`} className="line-clamp-4">
+                                    {snippet}
+                                  </li>
+                                ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      )}
                     </article>
                   ))}
                 </div>
