@@ -614,23 +614,19 @@ async function fetchFlavorsWithSteps(
 ) {
   const flavorQueryAttempts = [
     {
-      select: "id, name, description, created_by, created_at, updated_at",
-      ownerColumn: "created_by" as const,
+      select: "id, name, description, created_at, updated_at",
       orderColumn: "created_at" as const,
     },
     {
-      select: "id, name, description, created_by_user_id, created_at, updated_at",
-      ownerColumn: "created_by_user_id" as const,
+      select: "id, slug, description, created_at, updated_at",
       orderColumn: "created_at" as const,
     },
     {
-      select: "id, slug, description, created_by_user_id, created_datetime_utc, modified_datetime_utc",
-      ownerColumn: "created_by_user_id" as const,
+      select: "id, name, description, created_datetime_utc, modified_datetime_utc",
       orderColumn: "created_datetime_utc" as const,
     },
     {
-      select: "id, slug, description, created_by, created_datetime_utc, modified_datetime_utc",
-      ownerColumn: "created_by" as const,
+      select: "id, slug, description, created_datetime_utc, modified_datetime_utc",
       orderColumn: "created_datetime_utc" as const,
     },
   ];
