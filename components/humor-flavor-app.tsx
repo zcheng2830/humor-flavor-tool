@@ -854,7 +854,10 @@ async function insertFlavorWithFallback(
     {
       name: payload.name,
       description: payload.description,
-      created_by: payload.userId,
+    },
+    {
+      slug,
+      description: payload.description,
     },
     {
       name: payload.name,
@@ -869,9 +872,13 @@ async function insertFlavorWithFallback(
       modified_by_user_id: payload.userId,
     },
     {
-      slug,
+      name: payload.name,
       description: payload.description,
       created_by: payload.userId,
+    },
+    {
+      slug,
+      description: payload.description,
     },
   ];
 
@@ -914,7 +921,31 @@ async function insertFlavorStepWithFallback(
       title: payload.title,
       prompt: payload.prompt,
       step_order: payload.stepOrder,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      step_order: payload.stepOrder,
       created_by: payload.userId,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      title: payload.title,
+      prompt: payload.prompt,
+      order_by: payload.stepOrder,
+    },
+    {
+      humor_flavor_id: payload.flavorId,
+      description: payload.title,
+      llm_user_prompt: payload.prompt,
+      llm_system_prompt: "You are a caption generator. Return only valid JSON.",
+      llm_temperature: 0.7,
+      order_by: payload.stepOrder,
+      llm_input_type_id: 1,
+      llm_output_type_id: 2,
+      llm_model_id: 1,
+      humor_flavor_step_type_id: 1,
     },
     {
       humor_flavor_id: payload.flavorId,
@@ -935,14 +966,6 @@ async function insertFlavorStepWithFallback(
       llm_output_type_id: 2,
       llm_model_id: 1,
       humor_flavor_step_type_id: 1,
-      created_by_user_id: payload.userId,
-      modified_by_user_id: payload.userId,
-    },
-    {
-      humor_flavor_id: payload.flavorId,
-      title: payload.title,
-      prompt: payload.prompt,
-      order_by: payload.stepOrder,
       created_by_user_id: payload.userId,
       modified_by_user_id: payload.userId,
     },
