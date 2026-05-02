@@ -659,7 +659,7 @@ async function fetchLatestCaptionsByFlavor(
 
 async function fetchFlavorsWithSteps(
   supabase: SupabaseClient,
-  flavorIds?: string[],
+  targetFlavorIds?: string[],
 ) {
   const flavorQueryAttempts = [
     {
@@ -687,8 +687,8 @@ async function fetchFlavorsWithSteps(
       .select(attempt.select)
       .order(attempt.orderColumn, { ascending: false });
 
-    if (flavorIds?.length) {
-      query = query.in("id", flavorIds);
+    if (targetFlavorIds?.length) {
+      query = query.in("id", targetFlavorIds);
     }
 
     const response = await query;
@@ -708,18 +708,18 @@ async function fetchFlavorsWithSteps(
     return [];
   }
 
-  const flavorIds = flavors.map((row) => String(row.id));
-  if (!flavorIds.length) {
+  const loadedFlavorIds = flavors.map((row) => String(row.id));
+  if (!loadedFlavorIds.length) {
     return [];
   }
 
-  const latestCaptionsByFlavor = await fetchLatestCaptionsByFlavor(supabase, flavorIds);
+  const latestCaptionsByFlavor = await fetchLatestCaptionsByFlavor(supabase, loadedFlavorIds);
 
   let steps: StepRow[] = [];
   const primaryStepsResponse = await supabase
     .from("humor_flavor_steps")
     .select("id, humor_flavor_id, title, prompt, step_order, created_at, updated_at")
-    .in("humor_flavor_id", flavorIds)
+    .in("humor_flavor_id", loadedFlavorIds)
     .order("step_order", { ascending: true });
 
   if (primaryStepsResponse.error) {
@@ -732,7 +732,7 @@ async function fetchFlavorsWithSteps(
       .select(
         "id, humor_flavor_id, description, llm_user_prompt, llm_system_prompt, order_by, created_datetime_utc, modified_datetime_utc",
       )
-      .in("humor_flavor_id", flavorIds)
+      .in("humor_flavor_id", loadedFlavorIds)
       .order("order_by", { ascending: true });
 
     if (fallbackStepsResponse.error) {
@@ -1388,7 +1388,7 @@ export default function HumorFlavorApp() {
     }
 
     const flavorIdsToLoad = hasLoadedFlavors ? undefined : ownedFlavorIds;
-    if (!hasLoadedFlavors && !flavorIdsToLoad.length) {
+    if (!hasLoadedFlavors && !(flavorIdsToLoad?.length)) {
       setDataLoading(false);
       return;
     }
