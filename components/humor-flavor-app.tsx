@@ -27,17 +27,17 @@ const STEP_TEMPLATE_SUGGESTIONS = [
   {
     title: "Describe image",
     prompt:
-      "Describe the image literally. Identify the people/objects, visible actions, expressions, and any odd details.",
+      "Describe the image literally and specifically. List the visible people, objects, expressions, pose, setting, and any odd detail. Do not joke yet.",
   },
   {
     title: "Find funny angle",
     prompt:
-      "Based on the description, identify the funniest contrast, mismatch, or awkward moment. Keep it specific to this image.",
+      "Based on the literal description, identify the single funniest contrast, tension, mismatch, or awkward social energy in this image. Keep it specific.",
   },
   {
     title: "Generate 5 captions",
     prompt:
-      "Write 5 short, punchy captions from the funny angle. Keep each caption under 16 words and avoid repeating phrasing.",
+      "Write exactly 5 funny captions based on that angle. Rules: one caption per line, under 12 words each, no hashtags, no quotation marks, no explanation, no mentioning 'image' or 'photo', avoid repeating structure, and make each line feel like a real joke instead of a description.",
   },
 ] as const;
 
@@ -95,6 +95,18 @@ interface TestImageFile {
 interface FlavorListItem extends FlavorWithSteps {
   latestCaptions: string[];
   latestCaptionedAt: string | null;
+}
+
+interface FlavorReadiness {
+  isReady: boolean;
+  title: string;
+  notes: string[];
+}
+
+interface CaptionRuleCheck {
+  isValid: boolean;
+  title: string;
+  issues: string[];
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -341,6 +353,108 @@ function summarizeResponseKind(payload: unknown, captions: string[]) {
     title: "Pipeline returned step output",
     message: "This run looks like prompt-chain analysis or intermediate steps, not final caption results.",
     snippets,
+  };
+}
+
+function countWords(value: string) {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function validateGeneratedCaptions(captions: string[]): CaptionRuleCheck {
+  const issues: string[] = [];
+
+  if (!captions.length) {
+    return {
+      isValid: false,
+      title: "No captions found",
+      issues: ["The pipeline response did not produce any clear caption lines."],
+    };
+  }
+
+  if (captions.length !== 5) {
+    issues.push(`Expected exactly 5 captions, but found ${captions.length}.`);
+  }
+
+  const tooLongCount = captions.filter((caption) => countWords(caption) > 12).length;
+  if (tooLongCount > 0) {
+    issues.push(`${tooLongCount} caption${tooLongCount === 1 ? "" : "s"} exceed the 12-word limit.`);
+  }
+
+  const hashtagCount = captions.filter((caption) => /#\w+/.test(caption)).length;
+  if (hashtagCount > 0) {
+    issues.push(`${hashtagCount} caption${hashtagCount === 1 ? "" : "s"} contain hashtags.`);
+  }
+
+  const quoteCount = captions.filter((caption) => /["'“”‘’]/.test(caption)).length;
+  if (quoteCount > 0) {
+    issues.push(`${quoteCount} caption${quoteCount === 1 ? "" : "s"} contain quotation marks.`);
+  }
+
+  const photoWordCount = captions.filter((caption) => /\b(image|photo|picture)\b/i.test(caption)).length;
+  if (photoWordCount > 0) {
+    issues.push(`${photoWordCount} caption${photoWordCount === 1 ? "" : "s"} mention "image", "photo", or "picture".`);
+  }
+
+  const duplicateNormalizedCount =
+    captions.length - new Set(captions.map((caption) => caption.trim().toLowerCase())).size;
+  if (duplicateNormalizedCount > 0) {
+    issues.push(`${duplicateNormalizedCount} caption${duplicateNormalizedCount === 1 ? "" : "s"} repeat the same wording.`);
+  }
+
+  return {
+    isValid: issues.length === 0,
+    title: issues.length === 0 ? "Captions follow the rules" : "Captions need revision",
+    issues,
+  };
+}
+
+function analyzeFlavorReadiness(steps: HumorFlavorStep[]): FlavorReadiness {
+  if (!steps.length) {
+    return {
+      isReady: false,
+      title: "Needs setup",
+      notes: [
+        "This flavor has no steps yet.",
+        "Add a full 3-step flow: describe the image, find the funny angle, then generate captions.",
+      ],
+    };
+  }
+
+  const orderedSteps = [...steps].sort((a, b) => a.step_order - b.step_order);
+  const combined = orderedSteps.map((step) => `${step.title} ${step.prompt}`.toLowerCase()).join(" ");
+  const lastStep = orderedSteps[orderedSteps.length - 1];
+  const lastStepText = `${lastStep?.title ?? ""} ${lastStep?.prompt ?? ""}`.toLowerCase();
+
+  const notes: string[] = [];
+  let isReady = true;
+
+  if (orderedSteps.length < 3) {
+    isReady = false;
+    notes.push("It has fewer than 3 steps, so it will usually stop at description or analysis.");
+  }
+
+  if (!combined.includes("funny") && !combined.includes("joke") && !combined.includes("caption")) {
+    isReady = false;
+    notes.push("None of the steps clearly ask for humor or joke generation yet.");
+  }
+
+  if (!lastStepText.includes("caption") && !lastStepText.includes("joke")) {
+    isReady = false;
+    notes.push("The final step does not clearly ask for final captions, so the pipeline may return analysis only.");
+  }
+
+  if (!/exactly 5|5 short|5 funny|5 captions|five captions|one caption per line/.test(lastStepText)) {
+    notes.push("Consider making the final step stricter: exactly 5 captions, one per line, short and punchy.");
+  }
+
+  if (!notes.length) {
+    notes.push("This flavor has the right shape for producing actual joke captions.");
+  }
+
+  return {
+    isReady,
+    title: isReady ? "Ready for funny captions" : "Needs stronger caption rules",
+    notes,
   };
 }
 
@@ -1189,6 +1303,7 @@ export default function HumorFlavorApp() {
   const [newStepPrompt, setNewStepPrompt] = useState("");
   const [stepSavingState, setStepSavingState] = useState<Record<string, boolean>>({});
   const [isCreatingStep, setIsCreatingStep] = useState(false);
+  const [isApplyingStarterTemplate, setIsApplyingStarterTemplate] = useState(false);
   const [isReorderingStep, setIsReorderingStep] = useState(false);
 
   const [testFiles, setTestFiles] = useState<TestImageFile[]>([]);
@@ -1224,6 +1339,8 @@ export default function HumorFlavorApp() {
     );
   });
   const latestRunSummary = summarizeResponseKind(latestRawResponse, latestCaptions);
+  const flavorReadiness = analyzeFlavorReadiness(selectedSteps);
+  const captionRuleCheck = validateGeneratedCaptions(latestCaptions);
 
   useEffect(() => {
     try {
@@ -1869,6 +1986,43 @@ export default function HumorFlavorApp() {
 
     setNewStepTitle(suggestion.title);
     setNewStepPrompt(suggestion.prompt);
+  }
+
+  async function handleApplyStarterTemplate() {
+    if (!supabase || !session || !selectedFlavorId || !selectedFlavor) {
+      return;
+    }
+
+    const missingSuggestions = STEP_TEMPLATE_SUGGESTIONS.slice(selectedFlavor.steps.length);
+    if (!missingSuggestions.length) {
+      setDataError("This flavor already has the full starter template.");
+      return;
+    }
+
+    setIsApplyingStarterTemplate(true);
+    setDataError(null);
+
+    const startingOrder =
+      selectedFlavor.steps.reduce((currentMax, step) => Math.max(currentMax, step.step_order), 0) + 1;
+
+    for (const [index, suggestion] of missingSuggestions.entries()) {
+      const response = await insertFlavorStepWithFallback(supabase, {
+        flavorId: selectedFlavorId,
+        title: suggestion.title,
+        prompt: suggestion.prompt,
+        stepOrder: startingOrder + index,
+        userId: session.user.id,
+      });
+
+      if (!response.createStepSucceeded) {
+        setDataError(response.createStepErrorMessage ?? "Failed to apply starter template.");
+        setIsApplyingStarterTemplate(false);
+        return;
+      }
+    }
+
+    setDataRefreshToken((token) => token + 1);
+    setIsApplyingStarterTemplate(false);
   }
 
   function updateStepDraft(stepId: string, draft: Partial<StepDraft>) {
@@ -2597,13 +2751,42 @@ export default function HumorFlavorApp() {
                   Steps run in ascending order and form your prompt chain.
                 </p>
                 <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
-                  <p className="text-sm font-medium">Suggested 3-step template</p>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">{flavorReadiness.title}</p>
+                      <ul className="mt-2 space-y-1 text-xs text-[var(--muted)]">
+                        {flavorReadiness.notes.map((note, index) => (
+                          <li key={`readiness-${index}`}>• {note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className={`rounded-full px-3 py-1 text-xs font-medium ${
+                      flavorReadiness.isReady
+                        ? "border border-[var(--info)]/35 bg-[color-mix(in_srgb,var(--info)_16%,var(--surface))] text-[var(--info)]"
+                        : "border border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_16%,var(--surface))] text-[var(--warning)]"
+                    }`}>
+                      {flavorReadiness.isReady ? "Ready" : "Needs work"}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+                  <p className="text-sm font-medium">Suggested 3-step comedy template</p>
                   <p className="mt-1 text-xs text-[var(--muted)]">
-                    1) Describe image literally 2) Find funny angle 3) Generate 5 short captions.
+                    1) Describe the image literally 2) Find the funny angle 3) Write exactly 5 short joke captions.
                   </p>
-                  <button className="secondary-btn mt-3 px-3 py-1 text-xs" type="button" onClick={handleUseSuggestedNextStep}>
-                    Use Suggested Next Step
-                  </button>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button className="secondary-btn px-3 py-1 text-xs" type="button" onClick={handleUseSuggestedNextStep}>
+                      Use Suggested Next Step
+                    </button>
+                    <button
+                      className="secondary-btn px-3 py-1 text-xs"
+                      type="button"
+                      onClick={handleApplyStarterTemplate}
+                      disabled={isApplyingStarterTemplate}
+                    >
+                      {isApplyingStarterTemplate ? "Applying..." : "Add Full Starter Template"}
+                    </button>
+                  </div>
                 </div>
 
                 <form className="mt-4 grid gap-3 md:grid-cols-2" onSubmit={handleCreateStep}>
@@ -2712,6 +2895,11 @@ export default function HumorFlavorApp() {
                 <p className="mt-1 text-sm text-[var(--muted)]">
                   Upload one or more images, pick one, then run the 4-step pipeline. The tool will try to show final captions first and explain clearly if the API only returns intermediate analysis.
                 </p>
+                {!flavorReadiness.isReady ? (
+                  <p className="status-warn mt-3">
+                    This flavor is likely to return description or analysis instead of real jokes. Finish the 3-step caption flow first.
+                  </p>
+                ) : null}
 
                 <label className="field-label mt-4">
                   Add test images
@@ -2789,11 +2977,30 @@ export default function HumorFlavorApp() {
                     </div>
 
                     {latestCaptions.length > 0 ? (
-                      <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
-                        {latestCaptions.map((caption, index) => (
-                          <li key={`${caption}-${index}`}>{caption}</li>
-                        ))}
-                      </ul>
+                      <>
+                        <div className={`mt-3 rounded-lg border p-3 text-sm ${
+                          captionRuleCheck.isValid
+                            ? "border-[var(--info)]/35 bg-[color-mix(in_srgb,var(--info)_16%,var(--surface))] text-[var(--info)]"
+                            : "border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_16%,var(--surface))] text-[var(--warning)]"
+                        }`}>
+                          <p className="font-medium">{captionRuleCheck.title}</p>
+                          {captionRuleCheck.issues.length ? (
+                            <ul className="mt-2 space-y-1">
+                              {captionRuleCheck.issues.map((issue, index) => (
+                                <li key={`rule-issue-${index}`}>• {issue}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1">This run matches the current caption rules.</p>
+                          )}
+                        </div>
+
+                        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+                          {latestCaptions.map((caption, index) => (
+                            <li key={`${caption}-${index}`}>{caption}</li>
+                          ))}
+                        </ul>
+                      </>
                     ) : null}
 
                     {!latestCaptions.length && latestRunSummary.snippets.length ? (
