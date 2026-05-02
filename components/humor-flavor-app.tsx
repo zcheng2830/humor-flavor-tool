@@ -2190,7 +2190,7 @@ export default function HumorFlavorApp() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Humor Flavor Prompt Chain Tool</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Browse humor flavors, refine prompt steps, and test image captions without needing to dig through raw JSON.
+            Design a humor style, try it on images, and compare tones without digging through technical output.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -2218,7 +2218,7 @@ export default function HumorFlavorApp() {
             <div>
               <h2 className="text-lg font-semibold">Humor Flavors</h2>
               <p className="mt-1 text-xs text-[var(--muted)]">
-                Create your own style first, then load the shared flavor list only when you want to browse it.
+                Start by creating your own flavor, then browse shared ones only when you want inspiration.
               </p>
             </div>
             {hasLoadedFlavors ? (
@@ -2227,56 +2227,70 @@ export default function HumorFlavorApp() {
               </div>
             ) : null}
           </div>
-          <form className="mt-4 space-y-3" onSubmit={handleCreateFlavor}>
-            <label className="field-label">
-              Name
-              <input
-                className="field-input mt-1"
-                type="text"
-                value={newFlavorName}
-                onChange={(event) => setNewFlavorName(event.target.value)}
-                placeholder="Flavor name"
-                required
-              />
-            </label>
-            <label className="field-label">
-              Description
-              <textarea
-                className="field-input mt-1 min-h-20"
-                value={newFlavorDescription}
-                onChange={(event) => setNewFlavorDescription(event.target.value)}
-                placeholder="What kind of humor does this flavor generate?"
-              />
-            </label>
-            <button className="primary-btn w-full" type="submit" disabled={isCreatingFlavor}>
-              {isCreatingFlavor ? "Creating..." : "Create Flavor"}
-            </button>
-          </form>
-          <button
-            className="danger-btn mt-3 w-full"
-            type="button"
-            onClick={handleDeleteAllFlavors}
-            disabled={isDeletingAllFlavors || !flavors.length}
-          >
-            {isDeletingAllFlavors ? "Deleting all..." : "Delete All Flavors"}
-          </button>
 
-          {!hasLoadedFlavors ? (
-            <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
-              <p className="text-sm text-[var(--muted)]">
-                Shared flavors are hidden by default so the page does not feel overloaded.
-              </p>
-              <button
-                className="secondary-btn mt-3 w-full"
-                type="button"
-                onClick={handleLoadFlavors}
-                disabled={dataLoading}
-              >
-                {dataLoading ? "Loading..." : "Load Flavors"}
+          <section className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--muted)]">Create Your Flavor</p>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Give your humor style a clear name and a one-line description so it is easy to understand later.
+            </p>
+            <form className="mt-4 space-y-3" onSubmit={handleCreateFlavor}>
+              <label className="field-label">
+                Name
+                <input
+                  className="field-input mt-1"
+                  type="text"
+                  value={newFlavorName}
+                  onChange={(event) => setNewFlavorName(event.target.value)}
+                  placeholder="Example: Dry group chat energy"
+                  required
+                />
+              </label>
+              <label className="field-label">
+                Description
+                <textarea
+                  className="field-input mt-1 min-h-20"
+                  value={newFlavorDescription}
+                  onChange={(event) => setNewFlavorDescription(event.target.value)}
+                  placeholder="Example: Low-key, deadpan captions for awkward everyday moments."
+                />
+              </label>
+              <button className="primary-btn w-full" type="submit" disabled={isCreatingFlavor}>
+                {isCreatingFlavor ? "Creating..." : "Create Flavor"}
               </button>
+            </form>
+          </section>
+
+          <section className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--muted)]">Browse Shared Flavors</p>
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Load the shared list when you want examples, inspiration, or styles to compare against your own.
+                </p>
+              </div>
+              {hasLoadedFlavors ? (
+                <div className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs text-[var(--muted)]">
+                  {flavors.length}
+                </div>
+              ) : null}
             </div>
-          ) : (
-            <>
+
+            {!hasLoadedFlavors ? (
+              <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                <p className="text-sm text-[var(--muted)]">
+                  Shared flavors stay hidden by default so the page feels focused instead of overwhelming.
+                </p>
+                <button
+                  className="secondary-btn mt-3 w-full"
+                  type="button"
+                  onClick={handleLoadFlavors}
+                  disabled={dataLoading}
+                >
+                  {dataLoading ? "Loading..." : "Load Shared Flavors"}
+                </button>
+              </div>
+            ) : (
+              <>
               <label className="field-label mt-4">
                 Search flavors
                 <input
@@ -2331,8 +2345,18 @@ export default function HumorFlavorApp() {
                   </button>
                 ))}
               </div>
-            </>
-          )}
+              </>
+            )}
+          </section>
+
+          <button
+            className="danger-btn mt-4 w-full"
+            type="button"
+            onClick={handleDeleteAllFlavors}
+            disabled={isDeletingAllFlavors || !flavors.length}
+          >
+            {isDeletingAllFlavors ? "Deleting all..." : "Delete All Flavors"}
+          </button>
         </aside>
 
         <div className="space-y-5">
