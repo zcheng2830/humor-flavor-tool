@@ -22,6 +22,7 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 
 const THEME_STORAGE_KEY = "humor-flavor-tool-theme-mode";
 const LOCAL_CAPTION_RUNS_STORAGE_PREFIX = "humor-flavor-tool-local-caption-runs";
+const OWNED_FLAVOR_IDS_STORAGE_PREFIX = "humor-flavor-tool-owned-flavor-ids";
 const STEP_TEMPLATE_SUGGESTIONS = [
   {
     title: "Describe image",
@@ -378,6 +379,10 @@ function getLocalCaptionRunsStorageKey(userId: string, flavorId: string) {
   return `${LOCAL_CAPTION_RUNS_STORAGE_PREFIX}:${userId}:${flavorId}`;
 }
 
+function getOwnedFlavorIdsStorageKey(userId: string) {
+  return `${OWNED_FLAVOR_IDS_STORAGE_PREFIX}:${userId}`;
+}
+
 function readLocalCaptionRuns(userId: string, flavorId: string): CaptionRun[] {
   if (typeof window === "undefined") {
     return [];
@@ -445,6 +450,49 @@ function removeLocalCaptionRuns(userId: string, flavorIds: string[]) {
   for (const flavorId of flavorIds) {
     window.localStorage.removeItem(getLocalCaptionRunsStorageKey(userId, flavorId));
   }
+}
+
+function readOwnedFlavorIds(userId: string) {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getOwnedFlavorIdsStorageKey(userId));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return Array.from(new Set(parsed.map((item) => String(item)).filter(Boolean)));
+  } catch {
+    return [];
+  }
+}
+
+function saveOwnedFlavorIds(userId: string, flavorIds: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    getOwnedFlavorIdsStorageKey(userId),
+    JSON.stringify(Array.from(new Set(flavorIds.map((id) => String(id)).filter(Boolean)))),
+  );
+}
+
+function addOwnedFlavorId(userId: string, flavorId: string) {
+  const existing = readOwnedFlavorIds(userId);
+  saveOwnedFlavorIds(userId, [flavorId, ...existing]);
+}
+
+function removeOwnedFlavorIds(userId: string, flavorIds: string[]) {
+  const nextIds = readOwnedFlavorIds(userId).filter((id) => !flavorIds.includes(id));
+  saveOwnedFlavorIds(userId, nextIds);
 }
 
 function mergeCaptionRuns(primaryRuns: CaptionRun[], localRuns: CaptionRun[]) {
@@ -611,6 +659,7 @@ async function fetchLatestCaptionsByFlavor(
 
 async function fetchFlavorsWithSteps(
   supabase: SupabaseClient,
+  flavorIds?: string[],
 ) {
   const flavorQueryAttempts = [
     {
@@ -633,10 +682,16 @@ async function fetchFlavorsWithSteps(
 
   let flavors: FlavorRow[] | null = null;
   for (const attempt of flavorQueryAttempts) {
-    const response = await supabase
+    let query = supabase
       .from("humor_flavors")
       .select(attempt.select)
       .order(attempt.orderColumn, { ascending: false });
+
+    if (flavorIds?.length) {
+      query = query.in("id", flavorIds);
+    }
+
+    const response = await query;
 
     if (response.error) {
       if (isMissingColumnError(response.error)) {
@@ -841,6 +896,24 @@ function makeUniqueFlavorName(baseName: string, existingNames: string[]) {
   return candidate;
 }
 
+function makeUniqueSlug(baseSlug: string, suffix: number) {
+  const seed = baseSlug || `flavor-${Date.now()}`;
+  if (suffix <= 1) {
+    return seed;
+  }
+
+  const nextSlug = `${seed}-${suffix}`;
+  return nextSlug.slice(0, 64).replace(/-+$/g, "");
+}
+
+function isUniqueConstraintError(error: { code?: string | null; message?: string | null } | null) {
+  if (!error) {
+    return false;
+  }
+
+  return error.code === "23505" || Boolean(error.message?.includes("duplicate key value violates unique constraint"));
+}
+
 async function insertFlavorWithFallback(
   supabase: SupabaseClient,
   payload: {
@@ -849,57 +922,89 @@ async function insertFlavorWithFallback(
     userId: string;
   },
 ) {
-  const slug = toFlavorSlug(payload.name);
-  const insertCandidates: Array<Record<string, unknown>> = [
-    {
-      name: payload.name,
-      description: payload.description,
-    },
-    {
-      slug,
-      description: payload.description,
-    },
-    {
-      name: payload.name,
-      description: payload.description,
-      created_by_user_id: payload.userId,
-      modified_by_user_id: payload.userId,
-    },
-    {
-      slug,
-      description: payload.description,
-      created_by_user_id: payload.userId,
-      modified_by_user_id: payload.userId,
-    },
-    {
-      name: payload.name,
-      description: payload.description,
-      created_by: payload.userId,
-    },
-    {
-      slug,
-      description: payload.description,
-    },
-  ];
+  const baseSlug = toFlavorSlug(payload.name);
 
   let createdFlavorId: string | null = null;
   let createErrorMessage: string | null = null;
 
-  for (const candidate of insertCandidates) {
-    const { data, error } = await supabase
-      .from("humor_flavors")
-      .insert(candidate)
-      .select("id")
-      .single();
+  for (let slugAttempt = 1; slugAttempt <= 6; slugAttempt += 1) {
+    const slug = makeUniqueSlug(baseSlug, slugAttempt);
+    const insertCandidates: Array<Record<string, unknown>> = [
+      {
+        name: payload.name,
+        slug,
+        description: payload.description,
+      },
+      {
+        name: payload.name,
+        description: payload.description,
+      },
+      {
+        name: payload.name,
+        slug,
+        description: payload.description,
+        created_by_user_id: payload.userId,
+        modified_by_user_id: payload.userId,
+      },
+      {
+        slug,
+        description: payload.description,
+        created_by_user_id: payload.userId,
+        modified_by_user_id: payload.userId,
+      },
+      {
+        name: payload.name,
+        description: payload.description,
+        created_by_user_id: payload.userId,
+        modified_by_user_id: payload.userId,
+      },
+      {
+        name: payload.name,
+        slug,
+        description: payload.description,
+        created_by: payload.userId,
+      },
+      {
+        name: payload.name,
+        description: payload.description,
+        created_by: payload.userId,
+      },
+      {
+        slug,
+        description: payload.description,
+      },
+    ];
 
-    if (error) {
-      createErrorMessage = error.message;
-      continue;
+    let shouldRetryWithNewSlug = false;
+
+    for (const candidate of insertCandidates) {
+      const { data, error } = await supabase
+        .from("humor_flavors")
+        .insert(candidate)
+        .select("id")
+        .single();
+
+      if (error) {
+        createErrorMessage = error.message;
+        if (isUniqueConstraintError(error) && error.message?.includes("humor_flavors_slug_key")) {
+          shouldRetryWithNewSlug = true;
+          break;
+        }
+        continue;
+      }
+
+      createdFlavorId =
+        data && typeof data === "object" && "id" in data ? String(data.id as string | number) : null;
+      break;
     }
 
-    createdFlavorId =
-      data && typeof data === "object" && "id" in data ? String(data.id as string | number) : null;
-    break;
+    if (createdFlavorId) {
+      break;
+    }
+
+    if (!shouldRetryWithNewSlug) {
+      break;
+    }
   }
 
   return { createdFlavorId, createErrorMessage };
@@ -1065,6 +1170,7 @@ export default function HumorFlavorApp() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [dataRefreshToken, setDataRefreshToken] = useState(0);
   const [hasLoadedFlavors, setHasLoadedFlavors] = useState(false);
+  const [ownedFlavorIds, setOwnedFlavorIds] = useState<string[]>([]);
 
   const [newFlavorName, setNewFlavorName] = useState("");
   const [newFlavorDescription, setNewFlavorDescription] = useState("");
@@ -1264,6 +1370,15 @@ export default function HumorFlavorApp() {
   }, [themeMode]);
 
   useEffect(() => {
+    if (!session) {
+      setOwnedFlavorIds([]);
+      return;
+    }
+
+    setOwnedFlavorIds(readOwnedFlavorIds(session.user.id));
+  }, [session]);
+
+  useEffect(() => {
     if (!supabase || !session || !userIsAdmin) {
       setFlavors([]);
       setSelectedFlavorId(null);
@@ -1272,7 +1387,8 @@ export default function HumorFlavorApp() {
       return;
     }
 
-    if (!hasLoadedFlavors) {
+    const flavorIdsToLoad = hasLoadedFlavors ? undefined : ownedFlavorIds;
+    if (!hasLoadedFlavors && !flavorIdsToLoad.length) {
       setDataLoading(false);
       return;
     }
@@ -1281,7 +1397,7 @@ export default function HumorFlavorApp() {
     setDataLoading(true);
     setDataError(null);
 
-    void fetchFlavorsWithSteps(supabase)
+    void fetchFlavorsWithSteps(supabase, flavorIdsToLoad)
       .then((nextFlavors) => {
         if (!active) {
           return;
@@ -1313,7 +1429,7 @@ export default function HumorFlavorApp() {
     return () => {
       active = false;
     };
-  }, [dataRefreshToken, hasLoadedFlavors, session, supabase, userIsAdmin]);
+  }, [dataRefreshToken, hasLoadedFlavors, ownedFlavorIds, session, supabase, userIsAdmin]);
 
   useEffect(() => {
     if (!selectedFlavor) {
@@ -1458,6 +1574,8 @@ export default function HumorFlavorApp() {
 
     setNewFlavorName("");
     setNewFlavorDescription("");
+    addOwnedFlavorId(session.user.id, createdFlavorId);
+    setOwnedFlavorIds(readOwnedFlavorIds(session.user.id));
     setHasLoadedFlavors(true);
     setSelectedFlavorId(createdFlavorId);
     setDataRefreshToken((token) => token + 1);
@@ -1534,6 +1652,8 @@ export default function HumorFlavorApp() {
     }
 
     setSelectedFlavorId(createdFlavorId);
+    addOwnedFlavorId(session.user.id, createdFlavorId);
+    setOwnedFlavorIds(readOwnedFlavorIds(session.user.id));
     setHasLoadedFlavors(true);
     setDataRefreshToken((token) => token + 1);
     setIsDuplicatingFlavor(false);
@@ -1640,6 +1760,8 @@ export default function HumorFlavorApp() {
 
     if (session?.user?.id) {
       removeLocalCaptionRuns(session.user.id, [selectedFlavorId]);
+      removeOwnedFlavorIds(session.user.id, [selectedFlavorId]);
+      setOwnedFlavorIds(readOwnedFlavorIds(session.user.id));
     }
 
     setSelectedFlavorId(null);
@@ -1678,6 +1800,8 @@ export default function HumorFlavorApp() {
 
     if (session?.user?.id) {
       removeLocalCaptionRuns(session.user.id, flavorIds);
+      removeOwnedFlavorIds(session.user.id, flavorIds);
+      setOwnedFlavorIds(readOwnedFlavorIds(session.user.id));
     }
 
     setSelectedFlavorId(null);
