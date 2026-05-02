@@ -1316,6 +1316,8 @@ export default function HumorFlavorApp() {
   const [isGeneratingCaptions, setIsGeneratingCaptions] = useState(false);
   const [latestCaptions, setLatestCaptions] = useState<string[]>([]);
   const [latestRawResponse, setLatestRawResponse] = useState<unknown>(null);
+  const [showCaptionGuidance, setShowCaptionGuidance] = useState(false);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
 
   const [captionRuns, setCaptionRuns] = useState<CaptionRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
@@ -2319,6 +2321,8 @@ export default function HumorFlavorApp() {
       const captions = extractCaptions(captionPayload);
       setLatestCaptions(captions);
       setLatestRawResponse(captionPayload);
+      setShowCaptionGuidance(false);
+      setShowTechnicalDetails(false);
       setPipelineStatus("Caption generation finished.");
 
       const captionRunCandidates: Array<Record<string, unknown>> = [
@@ -2380,9 +2384,7 @@ export default function HumorFlavorApp() {
         setRunsRefreshToken((token) => token + 1);
 
         if (historyTableMissing) {
-          setPipelineWarning(
-            "Captions generated successfully. DB history table is missing, so this run was saved to local history in this browser.",
-          );
+          setPipelineWarning(null);
         } else {
           setPipelineWarning(
             `Captions were generated. DB save failed, so this run was saved locally in this browser: ${
@@ -2978,22 +2980,37 @@ export default function HumorFlavorApp() {
 
                     {latestCaptions.length > 0 ? (
                       <>
-                        <div className={`mt-3 rounded-lg border p-3 text-sm ${
-                          captionRuleCheck.isValid
-                            ? "border-[var(--info)]/35 bg-[color-mix(in_srgb,var(--info)_16%,var(--surface))] text-[var(--info)]"
-                            : "border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_16%,var(--surface))] text-[var(--warning)]"
-                        }`}>
-                          <p className="font-medium">{captionRuleCheck.title}</p>
-                          {captionRuleCheck.issues.length ? (
-                            <ul className="mt-2 space-y-1">
-                              {captionRuleCheck.issues.map((issue, index) => (
-                                <li key={`rule-issue-${index}`}>• {issue}</li>
-                              ))}
-                            </ul>
-                          ) : (
+                        {captionRuleCheck.isValid ? (
+                          <div className="mt-3 rounded-lg border border-[var(--info)]/35 bg-[color-mix(in_srgb,var(--info)_16%,var(--surface))] p-3 text-sm text-[var(--info)]">
+                            <p className="font-medium">{captionRuleCheck.title}</p>
                             <p className="mt-1">This run matches the current caption rules.</p>
-                          )}
-                        </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="font-medium text-[var(--foreground)]">Captions could be sharper</p>
+                                <p className="mt-1 text-[var(--muted)]">
+                                  This run came back, but it did not fully match your caption rules.
+                                </p>
+                              </div>
+                              <button
+                                className="secondary-btn px-3 py-1 text-xs"
+                                type="button"
+                                onClick={() => setShowCaptionGuidance((current) => !current)}
+                              >
+                                {showCaptionGuidance ? "Hide tips" : "Show improvement tips"}
+                              </button>
+                            </div>
+                            {showCaptionGuidance ? (
+                              <ul className="mt-3 space-y-1 text-[var(--warning)]">
+                                {captionRuleCheck.issues.map((issue, index) => (
+                                  <li key={`rule-issue-${index}`}>• {issue}</li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                        )}
 
                         <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
                           {latestCaptions.map((caption, index) => (
@@ -3021,12 +3038,26 @@ export default function HumorFlavorApp() {
                 ) : null}
 
                 {latestRawResponse ? (
-                  <details className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
-                    <summary className="cursor-pointer font-semibold">Debug: Latest Raw API Response</summary>
-                    <pre className="mt-2 overflow-auto text-xs text-[var(--muted)]">
-                      {JSON.stringify(latestRawResponse, null, 2)}
-                    </pre>
-                  </details>
+                  <div className="mt-4">
+                    <button
+                      className="secondary-btn px-3 py-2 text-xs"
+                      type="button"
+                      onClick={() => setShowTechnicalDetails((current) => !current)}
+                    >
+                      {showTechnicalDetails ? "Hide Technical Details" : "Show Technical Details"}
+                    </button>
+                    {showTechnicalDetails ? (
+                      <details className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4" open>
+                        <summary className="cursor-pointer font-semibold">Latest Raw API Response</summary>
+                        <p className="mt-2 text-xs text-[var(--muted)]">
+                          Helpful for debugging prompt-chain behavior. Most users do not need this.
+                        </p>
+                        <pre className="mt-2 overflow-auto text-xs text-[var(--muted)]">
+                          {JSON.stringify(latestRawResponse, null, 2)}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
                 ) : null}
               </section>
 
