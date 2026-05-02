@@ -1045,6 +1045,7 @@ export default function HumorFlavorApp() {
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
   const [dataRefreshToken, setDataRefreshToken] = useState(0);
+  const [hasLoadedFlavors, setHasLoadedFlavors] = useState(false);
 
   const [newFlavorName, setNewFlavorName] = useState("");
   const [newFlavorDescription, setNewFlavorDescription] = useState("");
@@ -1252,6 +1253,11 @@ export default function HumorFlavorApp() {
       return;
     }
 
+    if (!hasLoadedFlavors) {
+      setDataLoading(false);
+      return;
+    }
+
     let active = true;
     setDataLoading(true);
     setDataError(null);
@@ -1288,7 +1294,7 @@ export default function HumorFlavorApp() {
     return () => {
       active = false;
     };
-  }, [dataRefreshToken, session, supabase, userIsAdmin]);
+  }, [dataRefreshToken, hasLoadedFlavors, session, supabase, userIsAdmin]);
 
   useEffect(() => {
     if (!selectedFlavor) {
@@ -1433,6 +1439,7 @@ export default function HumorFlavorApp() {
 
     setNewFlavorName("");
     setNewFlavorDescription("");
+    setHasLoadedFlavors(true);
     setSelectedFlavorId(createdFlavorId);
     setDataRefreshToken((token) => token + 1);
     setIsCreatingFlavor(false);
@@ -1508,6 +1515,7 @@ export default function HumorFlavorApp() {
     }
 
     setSelectedFlavorId(createdFlavorId);
+    setHasLoadedFlavors(true);
     setDataRefreshToken((token) => token + 1);
     setIsDuplicatingFlavor(false);
   }
@@ -1663,6 +1671,11 @@ export default function HumorFlavorApp() {
     setDataRefreshToken((token) => token + 1);
     setRunsRefreshToken((token) => token + 1);
     setIsDeletingAllFlavors(false);
+  }
+
+  function handleLoadFlavors() {
+    setHasLoadedFlavors(true);
+    setDataRefreshToken((token) => token + 1);
   }
 
   async function handleCreateStep(event: FormEvent<HTMLFormElement>) {
@@ -2205,12 +2218,14 @@ export default function HumorFlavorApp() {
             <div>
               <h2 className="text-lg font-semibold">Humor Flavors</h2>
               <p className="mt-1 text-xs text-[var(--muted)]">
-                Explore existing styles or create your own. Recent caption previews help you judge each flavor quickly.
+                Create your own style first, then load the shared flavor list only when you want to browse it.
               </p>
             </div>
-            <div className="rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-1 text-xs text-[var(--muted)]">
-              {flavors.length} total
-            </div>
+            {hasLoadedFlavors ? (
+              <div className="rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-1 text-xs text-[var(--muted)]">
+                {flavors.length} total
+              </div>
+            ) : null}
           </div>
           <form className="mt-4 space-y-3" onSubmit={handleCreateFlavor}>
             <label className="field-label">
@@ -2246,60 +2261,78 @@ export default function HumorFlavorApp() {
             {isDeletingAllFlavors ? "Deleting all..." : "Delete All Flavors"}
           </button>
 
-          <label className="field-label mt-4">
-            Search flavors
-            <input
-              className="field-input mt-1"
-              type="text"
-              value={flavorSearch}
-              onChange={(event) => setFlavorSearch(event.target.value)}
-              placeholder="Search by name, description, or preview caption"
-            />
-          </label>
-
-          <div className="mt-5 space-y-2">
-            {dataLoading && !flavors.length ? <p className="text-sm text-[var(--muted)]">Loading flavors...</p> : null}
-            {!dataLoading && !flavors.length ? (
-              <p className="text-sm text-[var(--muted)]">No humor flavors yet.</p>
-            ) : null}
-            {!dataLoading && flavors.length > 0 && !filteredFlavors.length ? (
-              <p className="text-sm text-[var(--muted)]">No flavors match that search yet.</p>
-            ) : null}
-            {filteredFlavors.map((flavor) => (
+          {!hasLoadedFlavors ? (
+            <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+              <p className="text-sm text-[var(--muted)]">
+                Shared flavors are hidden by default so the page does not feel overloaded.
+              </p>
               <button
-                key={flavor.id}
+                className="secondary-btn mt-3 w-full"
                 type="button"
-                onClick={() => setSelectedFlavorId(flavor.id)}
-                className={`w-full rounded-xl border px-3 py-3 text-left transition ${
-                  selectedFlavorId === flavor.id
-                    ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                    : "border-[var(--border)] bg-[var(--surface-muted)] hover:border-[var(--accent)]/60"
-                }`}
+                onClick={handleLoadFlavors}
+                disabled={dataLoading}
               >
-                <p className="font-medium">{flavor.name}</p>
-                <p className="text-xs text-[var(--muted)]">{flavor.steps.length} step(s)</p>
-                {flavor.description ? (
-                  <p className="mt-2 line-clamp-2 text-xs text-[var(--muted)]">{flavor.description}</p>
-                ) : null}
-                <div className="mt-3 border-t border-[var(--border)] pt-3">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
-                    Latest 5 Captions
-                  </p>
-                  {flavor.latestCaptions.length ? (
-                    <ul className="mt-2 space-y-1 text-xs text-[var(--foreground)]/88">
-                      {flavor.latestCaptions.map((caption, index) => (
-                        <li key={`${flavor.id}-preview-${index}`} className="line-clamp-2">
-                          {caption}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-xs text-[var(--muted)]">No generated captions yet.</p>
-                  )}
-                </div>
+                {dataLoading ? "Loading..." : "Load Flavors"}
               </button>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <>
+              <label className="field-label mt-4">
+                Search flavors
+                <input
+                  className="field-input mt-1"
+                  type="text"
+                  value={flavorSearch}
+                  onChange={(event) => setFlavorSearch(event.target.value)}
+                  placeholder="Search by name, description, or preview caption"
+                />
+              </label>
+
+              <div className="mt-5 space-y-2">
+                {dataLoading && !flavors.length ? <p className="text-sm text-[var(--muted)]">Loading flavors...</p> : null}
+                {!dataLoading && !flavors.length ? (
+                  <p className="text-sm text-[var(--muted)]">No humor flavors yet.</p>
+                ) : null}
+                {!dataLoading && flavors.length > 0 && !filteredFlavors.length ? (
+                  <p className="text-sm text-[var(--muted)]">No flavors match that search yet.</p>
+                ) : null}
+                {filteredFlavors.map((flavor) => (
+                  <button
+                    key={flavor.id}
+                    type="button"
+                    onClick={() => setSelectedFlavorId(flavor.id)}
+                    className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                      selectedFlavorId === flavor.id
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                        : "border-[var(--border)] bg-[var(--surface-muted)] hover:border-[var(--accent)]/60"
+                    }`}
+                  >
+                    <p className="font-medium">{flavor.name}</p>
+                    <p className="text-xs text-[var(--muted)]">{flavor.steps.length} step(s)</p>
+                    {flavor.description ? (
+                      <p className="mt-2 line-clamp-2 text-xs text-[var(--muted)]">{flavor.description}</p>
+                    ) : null}
+                    <div className="mt-3 border-t border-[var(--border)] pt-3">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+                        Latest 5 Captions
+                      </p>
+                      {flavor.latestCaptions.length ? (
+                        <ul className="mt-2 space-y-1 text-xs text-[var(--foreground)]/88">
+                          {flavor.latestCaptions.map((caption, index) => (
+                            <li key={`${flavor.id}-preview-${index}`} className="line-clamp-2">
+                              {caption}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-2 text-xs text-[var(--muted)]">No generated captions yet.</p>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </aside>
 
         <div className="space-y-5">
